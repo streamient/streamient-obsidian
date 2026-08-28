@@ -26,7 +26,7 @@ BRAT installs and updates the versioned files from [GitHub Releases](https://git
 
 ### Manual Installation
 
-1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/streamient/streamient-obsidian/releases/latest).
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [releases page](https://github.com/streamient/streamient-obsidian/releases).
 2. Place them in `<vault>/.obsidian/plugins/streamient-sync/`.
 3. Reload Obsidian and enable **Streamient Sync** under Community plugins.
 
