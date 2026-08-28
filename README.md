@@ -40,8 +40,6 @@ To test prerelease builds, install [BRAT](https://obsidian.md/plugins?id=obsidia
 3. Authorize `vault:read` and `vault:write` access.
 4. Choose a project, review the first-sync preview, and start synchronization.
 
-See the [Streamient Obsidian Sync guide](https://docs.streamient.com/guide/obsidian-sync/) for configuration, conflict handling, privacy, and self-hosted server settings.
-
 ## Privacy and network disclosure
 
 Streamient Sync requires a Streamient account and connects only to the configured Streamient server. To provide full-vault synchronization, the plugin enumerates all user-visible vault files before applying the exclusions below. Vault content is sent over TLS in server-readable form so Streamient can index, preview, and edit it. The Streamient server encrypts synchronized files at rest. OAuth refresh credentials use Obsidian SecretStorage. The plugin contains no advertising, analytics, or telemetry.
