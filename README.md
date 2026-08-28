@@ -37,8 +37,6 @@ BRAT installs and updates the versioned files from [GitHub Releases](https://git
 3. Authorize `vault:read` and `vault:write` access.
 4. Choose a project, review the first-sync preview, and start synchronization.
 
-For local Streamient development, use `http://s.lan` as the server URL.
-
 ## Privacy and network disclosure
 
 Streamient Sync requires a Streamient account and connects only to the configured Streamient server. Vault content is sent over TLS in server-readable form so Streamient can index, preview, and edit it. The Streamient server encrypts synchronized files at rest. OAuth refresh credentials use Obsidian SecretStorage. The plugin contains no advertising, analytics, or telemetry.
