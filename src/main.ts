@@ -55,6 +55,7 @@ export default class StreamientSyncPlugin extends Plugin {
   private engine!: SyncEngine;
   private accessToken = '';
   private accessTokenExpiresAt = 0;
+  private apiClient: StreamientApi | null = null;
   private statusBar: HTMLElement | null = null;
   private settingTab: StreamientSettingTab | null = null;
   syncProgress: SyncProgress = { phase: 'idle', active: false, current: 0, total: 0, path: '', error: '' };
@@ -171,7 +172,9 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   api(): StreamientApi {
-    return new StreamientApi(this.settings.serverUrl, () => this.token());
+    const serverUrl = normalizeServerUrl(this.settings.serverUrl);
+    if (!this.apiClient || this.apiClient.serverUrl !== serverUrl) this.apiClient = new StreamientApi(serverUrl, () => this.token());
+    return this.apiClient;
   }
 
   async startAuthorization(): Promise<void> {

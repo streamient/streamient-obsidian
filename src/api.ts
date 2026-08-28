@@ -1,10 +1,13 @@
 import { requestUrl } from 'obsidian';
+import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 import { manifestBatches, normalizeServerUrl, sha256Hex, UPLOAD_CHUNK_SIZE, uuid } from './core';
 import type { ConnectionSummary, ManifestEntry, MutationResult, ProjectSummary, SyncAction, SyncChange } from './types';
 
 const CLIENT_ID = 'streamient-obsidian';
 const REDIRECT_URI = 'obsidian://streamient-auth';
+const MIN_REQUEST_INTERVAL_MS = 25;
+const MAX_RATE_LIMIT_RETRIES = 6;
 
 interface TokenResponse {
   access_token: string;
@@ -70,19 +73,34 @@ export function refreshAccessToken(serverUrl: string, refreshToken: string): Pro
 export class StreamientApi {
   serverUrl: string;
   private readonly accessToken: () => Promise<string>;
+  private nextRequestAt = 0;
 
   constructor(serverUrl: string, accessToken: () => Promise<string>) {
     this.serverUrl = normalizeServerUrl(serverUrl);
     this.accessToken = accessToken;
   }
 
+  private async pacedRequest(options: RequestUrlParam): Promise<RequestUrlResponse> {
+    for (let attempt = 0; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
+      const wait = Math.max(0, this.nextRequestAt - Date.now());
+      if (wait) await new Promise((resolve) => window.setTimeout(resolve, wait));
+      this.nextRequestAt = Date.now() + MIN_REQUEST_INTERVAL_MS;
+      const response = await requestUrl({ ...options, throw: false });
+      if (response.status !== 429 || attempt === MAX_RATE_LIMIT_RETRIES) return response;
+      const retryAfter = response.headers?.['retry-after'] || response.headers?.['Retry-After'] || '';
+      const retryAfterSeconds = Number(retryAfter);
+      const delay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? Math.min(retryAfterSeconds * 1000, 30_000) : Math.min(1000 * (2 ** attempt), 30_000);
+      await new Promise((resolve) => window.setTimeout(resolve, delay));
+    }
+    throw new Error('Streamient rate-limit retry exhausted');
+  }
+
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const response = await requestUrl({
+    const response = await this.pacedRequest({
       url: `${this.serverUrl}/api/v1/obsidian${path}`,
       method,
       headers: { Authorization: `Bearer ${await this.accessToken()}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       body: body === undefined ? undefined : jsonBody(body),
-      throw: false,
     });
     if (response.status < 200 || response.status >= 300) throw responseError(response);
     return response.json as T;
@@ -137,7 +155,7 @@ export class StreamientApi {
     const chunkSize = session.chunk_size || UPLOAD_CHUNK_SIZE;
     for (let offset = 0; offset < content.byteLength; offset += chunkSize) {
       const chunk = content.slice(offset, Math.min(offset + chunkSize, content.byteLength));
-      const response = await requestUrl({
+      const response = await this.pacedRequest({
         url: `${this.serverUrl}/api/v1/obsidian/uploads/${session.id}`,
         method: 'PATCH',
         headers: {
@@ -148,7 +166,6 @@ export class StreamientApi {
           'Upload-Checksum': `sha256 ${await sha256Hex(chunk)}`,
         },
         body: chunk,
-        throw: false,
       });
       if (response.status < 200 || response.status >= 300) throw responseError(response);
     }
@@ -157,11 +174,10 @@ export class StreamientApi {
   }
 
   async download(fileId: string): Promise<ArrayBuffer> {
-    const response = await requestUrl({
+    const response = await this.pacedRequest({
       url: `${this.serverUrl}/api/v1/obsidian/files/${fileId}/content`,
       method: 'GET',
       headers: { Authorization: `Bearer ${await this.accessToken()}` },
-      throw: false,
     });
     if (response.status < 200 || response.status >= 300) throw responseError(response);
     return response.arrayBuffer;
