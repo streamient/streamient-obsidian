@@ -27,13 +27,12 @@ const DEVICE_SETTING_KEYS = ['authenticated', 'deviceId', 'deviceName', 'cursor'
 
 class ProjectPicker extends FuzzySuggestModal<ProjectSummary> {
   private readonly projects: ProjectSummary[];
-  private readonly resolveChoice: (project: ProjectSummary | null) => void;
-  private chosen = false;
+  private readonly choose: (project: ProjectSummary) => void;
 
-  constructor(app: App, projects: ProjectSummary[], resolveChoice: (project: ProjectSummary | null) => void) {
+  constructor(app: App, projects: ProjectSummary[], choose: (project: ProjectSummary) => void) {
     super(app);
     this.projects = projects;
-    this.resolveChoice = resolveChoice;
+    this.choose = choose;
     this.setPlaceholder('Choose a Streamient project');
   }
 
@@ -46,13 +45,7 @@ class ProjectPicker extends FuzzySuggestModal<ProjectSummary> {
   }
 
   onChooseItem(project: ProjectSummary): void {
-    this.chosen = true;
-    this.resolveChoice(project);
-  }
-
-  onClose(): void {
-    super.onClose();
-    if (!this.chosen) this.resolveChoice(null);
+    this.choose(project);
   }
 }
 
@@ -196,18 +189,21 @@ export default class StreamientSyncPlugin extends Plugin {
     }
   }
 
-  private projectChoice(projects: ProjectSummary[]): Promise<ProjectSummary | null> {
-    return new Promise((resolve) => new ProjectPicker(this.app, projects, resolve).open());
-  }
-
   async chooseProject(): Promise<void> {
     if (!this.settings.authenticated) {
       new Notice('Sign in to Streamient first');
       return;
     }
     try {
-      const project = await this.projectChoice(await this.api().projects());
-      if (!project) return;
+      const projects = await this.api().projects();
+      new ProjectPicker(this.app, projects, (project) => void this.connectProject(project)).open();
+    } catch (error) {
+      new Notice(`Could not list Streamient projects: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async connectProject(project: ProjectSummary): Promise<void> {
+    try {
       const connection = await this.api().connect({
         project_id: project._id,
         name: this.app.vault.getName(),
@@ -228,7 +224,7 @@ export default class StreamientSyncPlugin extends Plugin {
       this.refreshSettingsTab();
       await this.engine.fullSync(true);
     } catch (error) {
-      new Notice(`Could not choose Streamient project: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(`Could not connect Streamient project: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.refreshSettingsTab();
     }

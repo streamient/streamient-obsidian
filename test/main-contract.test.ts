@@ -19,3 +19,9 @@ test('rerenders settings after OAuth and connection state transitions', () => {
   assert.match(source, /setDisabled\(!this\.plugin\.settings\.authenticated\)/);
   assert.ok((source.match(/this\.refreshSettingsTab\(\)/g) || []).length >= 5);
 });
+
+test('connects directly from the project picker without an onClose race', () => {
+  assert.match(source, /onChooseItem\(project: ProjectSummary\): void \{\n\s+this\.choose\(project\)/);
+  assert.match(source, /new ProjectPicker\(this\.app, projects, \(project\) => void this\.connectProject\(project\)\)\.open\(\)/);
+  assert.doesNotMatch(source, /projectChoice|resolveChoice|onClose\(\)/);
+});
