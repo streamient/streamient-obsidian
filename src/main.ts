@@ -1,4 +1,4 @@
-import { App, ButtonComponent, FuzzySuggestModal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { App, ButtonComponent, FuzzySuggestModal, Notice, Platform, Plugin, PluginSettingTab, type SettingDefinitionItem, TFile } from 'obsidian';
 
 import { authorizationUrl, exchangeAuthorizationCode, refreshAccessToken, StreamientApi } from './api';
 import { base64Url, normalizeServerUrl, pkceChallenge, uuid } from './core';
@@ -61,8 +61,9 @@ export default class StreamientSyncPlugin extends Plugin {
   syncProgress: SyncProgress = { phase: 'idle', active: false, current: 0, total: 0, path: '', error: '' };
 
   async onload(): Promise<void> {
-    const local = this.app.loadLocalStorage(this.localStorageKey()) || {};
-    Object.assign(this.settings, DEFAULT_SETTINGS, await this.loadData(), local);
+    const savedSettings: unknown = await this.loadData();
+    const localSettings: unknown = this.app.loadLocalStorage(this.localStorageKey());
+    Object.assign(this.settings, DEFAULT_SETTINGS, this.settingsRecord(savedSettings), this.settingsRecord(localSettings));
     this.settings.fileStates ||= {};
     this.settings.pendingOperations ||= [];
     this.settings.deviceId ||= uuid();
@@ -110,6 +111,10 @@ export default class StreamientSyncPlugin extends Plugin {
     this.refreshStatus();
   }
 
+  private settingsRecord(value: unknown): Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+
   private localStorageKey(): string {
     return `${this.manifest.id}-device-${this.app.vault.getName().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
   }
@@ -142,7 +147,7 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   private refreshSettingsTab(): void {
-    this.settingTab?.display();
+    this.settingTab?.update();
   }
 
   syncStatusText(): string {
@@ -308,51 +313,57 @@ class StreamientSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-    new Setting(containerEl).setName('Streamient server').setHeading();
-    new Setting(containerEl)
-      .setName('Server URL')
-      .setDesc('Your hosted or self-hosted Streamient URL.')
-      .addText((text) => text.setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
-        this.plugin.settings.serverUrl = normalizeServerUrl(value);
-        await this.plugin.saveSettings();
-      }));
-    new Setting(containerEl)
-      .setName('Account')
-      .setDesc(this.plugin.settings.authenticated ? 'Signed in' : 'Not signed in')
-      .addButton((button) => button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization()))
-      .addButton((button) => button.setButtonText('Disconnect').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.disconnect()));
-    new Setting(containerEl)
-      .setName('Project')
-      .setDesc(this.plugin.settings.projectName || (this.plugin.settings.authenticated ? 'Choose a project' : 'Sign in first'))
-      .addButton((button) => button.setButtonText('Choose project').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.chooseProject()));
-    new Setting(containerEl)
-      .setName('Streamient folder')
-      .setDesc('New Streamient Notes are created here. Memories use its Memories subfolder.')
-      .addText((text) => text.setValue(this.plugin.settings.streamientFolder).onChange(async (value) => {
-        this.plugin.settings.streamientFolder = value.trim() || 'Streamient';
-        if (this.plugin.settings.connectionId) await this.plugin.api().updateConnection(this.plugin.settings.connectionId, { streamient_folder: this.plugin.settings.streamientFolder });
-        await this.plugin.saveSettings();
-      }));
-    new Setting(containerEl)
-      .setName('Device name')
-      .setDesc('Shown in Streamient sync status and conflict history.')
-      .addText((text) => text.setValue(this.plugin.settings.deviceName).onChange(async (value) => {
-        this.plugin.settings.deviceName = value.trim();
-        await this.plugin.saveSettings();
-      }));
-    const syncSetting = new Setting(containerEl)
-      .setName('Sync now')
-      .setDesc('')
-      .addButton((button) => {
-        this.syncButton = button;
-        button.setButtonText('Sync').setCta().onClick(() => void this.plugin.syncNow());
-      });
-    this.syncDescription = syncSetting.descEl;
-    this.updateSyncStatus();
-    containerEl.createEl('p', { cls: 'setting-item-description streamient-disclosure', text: 'Streamient receives readable vault content over TLS so it can index, preview, and edit it. Files are encrypted at rest by Streamient. The plugin includes no telemetry.' });
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [{
+      type: 'group',
+      heading: 'Streamient server',
+      items: [
+        { name: 'Server URL', desc: 'Your hosted or self-hosted Streamient URL.', control: { type: 'text', key: 'serverUrl', validate: (value) => normalizeServerUrl(value) ? undefined : 'Enter a Streamient server URL.' } },
+        {
+          name: 'Account',
+          desc: this.plugin.settings.authenticated ? 'Signed in' : 'Not signed in',
+          render: (setting) => {
+            setting.addButton((button) => button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization()));
+            setting.addButton((button) => button.setButtonText('Disconnect').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.disconnect()));
+          },
+        },
+        {
+          name: 'Project',
+          desc: this.plugin.settings.projectName || (this.plugin.settings.authenticated ? 'Choose a project' : 'Sign in first'),
+          render: (setting) => setting.addButton((button) => button.setButtonText('Choose project').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.chooseProject())),
+        },
+        { name: 'Streamient folder', desc: 'New Streamient Notes are created here. Memories use its Memories subfolder.', control: { type: 'text', key: 'streamientFolder' } },
+        { name: 'Device name', desc: 'Shown in Streamient sync status and conflict history.', control: { type: 'text', key: 'deviceName' } },
+        {
+          name: 'Sync now',
+          desc: '',
+          render: (setting) => {
+            this.syncDescription = setting.descEl;
+            setting.addButton((button) => {
+              this.syncButton = button;
+              button.setButtonText('Sync').setCta().onClick(() => void this.plugin.syncNow());
+            });
+            this.updateSyncStatus();
+          },
+        },
+        {
+          name: 'Data handling',
+          desc: 'Streamient receives readable vault content over TLS so it can index, preview, and edit it. Files are encrypted at rest by Streamient. The plugin includes no telemetry.',
+          render: (setting) => setting.settingEl.addClass('streamient-disclosure'),
+        },
+      ],
+    }];
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    if (typeof value !== 'string') return;
+    if (key === 'serverUrl') this.plugin.settings.serverUrl = normalizeServerUrl(value);
+    else if (key === 'streamientFolder') {
+      this.plugin.settings.streamientFolder = value.trim() || 'Streamient';
+      if (this.plugin.settings.connectionId) await this.plugin.api().updateConnection(this.plugin.settings.connectionId, { streamient_folder: this.plugin.settings.streamientFolder });
+    } else if (key === 'deviceName') this.plugin.settings.deviceName = value.trim();
+    else return;
+    await this.plugin.saveSettings();
   }
 
   updateSyncStatus(): void {

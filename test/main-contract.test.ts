@@ -15,9 +15,17 @@ test('keeps authentication device-local and restores it from SecretStorage', () 
 
 test('rerenders settings after OAuth and connection state transitions', () => {
   assert.match(source, /await this\.saveSettings\(\);\n\s+this\.refreshSettingsTab\(\);\n\s+new Notice\('Connected to Streamient'\)/);
-  assert.match(source, /setDesc\(this\.plugin\.settings\.authenticated \? 'Signed in' : 'Not signed in'\)/);
+  assert.match(source, /desc: this\.plugin\.settings\.authenticated \? 'Signed in' : 'Not signed in'/);
   assert.match(source, /setDisabled\(!this\.plugin\.settings\.authenticated\)/);
   assert.ok((source.match(/this\.refreshSettingsTab\(\)/g) || []).length >= 5);
+});
+
+test('uses safe persisted values and searchable declarative settings', () => {
+  assert.match(source, /const savedSettings: unknown = await this\.loadData\(\)/);
+  assert.match(source, /const localSettings: unknown = this\.app\.loadLocalStorage/);
+  assert.match(source, /getSettingDefinitions\(\): SettingDefinitionItem\[\]/);
+  assert.match(source, /this\.settingTab\?\.update\(\)/);
+  assert.doesNotMatch(source, /\n\s+display\(\): void/);
 });
 
 test('connects directly from the project picker without an onClose race', () => {

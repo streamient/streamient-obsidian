@@ -1,6 +1,6 @@
 {
   "name": "streamient-obsidian",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,13 +10,16 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "lint": "eslint .",
     "test": "tsx --test test/*.test.ts",
     "check:mobile": "node scripts/check-mobile.mjs",
-    "verify": "pnpm test && pnpm build && pnpm check:mobile"
+    "verify": "pnpm lint && pnpm test && pnpm build && pnpm check:mobile"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
     "esbuild": "latest",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "obsidian": "latest",
     "tsx": "latest",
     "typescript": "^5.9.3"

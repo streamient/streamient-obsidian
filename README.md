@@ -13,7 +13,7 @@ Synchronize Markdown, Canvas, Bases, documents, and attachments between an Obsid
 
 ## Beta Installation
 
-Streamient Sync is in public beta while its Obsidian Community directory submission is prepared.
+Streamient Sync is available through BRAT while its Obsidian Community directory submission is under review. Version 0.1.7 and later require Obsidian 1.13.0 or newer.
 
 ### BRAT
 
@@ -39,6 +39,6 @@ BRAT installs and updates the versioned files from [GitHub Releases](https://git
 
 ## Privacy and network disclosure
 
-Streamient Sync requires a Streamient account and connects only to the configured Streamient server. Vault content is sent over TLS in server-readable form so Streamient can index, preview, and edit it. The Streamient server encrypts synchronized files at rest. OAuth refresh credentials use Obsidian SecretStorage. The plugin contains no advertising, analytics, or telemetry.
+Streamient Sync requires a Streamient account and connects only to the configured Streamient server. To provide full-vault synchronization, the plugin enumerates all user-visible vault files before applying the exclusions below. Vault content is sent over TLS in server-readable form so Streamient can index, preview, and edit it. The Streamient server encrypts synchronized files at rest. OAuth refresh credentials use Obsidian SecretStorage. The plugin contains no advertising, analytics, or telemetry.
 
 The plugin excludes `.obsidian`, `.git`, `.trash`, other dot-folders, OS metadata, and temporary files.
