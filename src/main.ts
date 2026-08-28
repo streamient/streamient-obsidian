@@ -1,0 +1,302 @@
+import { App, FuzzySuggestModal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+
+import { authorizationUrl, exchangeAuthorizationCode, refreshAccessToken, StreamientApi } from './api';
+import { base64Url, normalizeServerUrl, pkceChallenge, uuid } from './core';
+import { SyncEngine } from './sync';
+import type { ProjectSummary, StreamientSyncSettings } from './types';
+
+const DEFAULT_SETTINGS: StreamientSyncSettings = {
+  serverUrl: 'https://app.streamient.com',
+  connectionId: '',
+  projectId: '',
+  projectName: '',
+  deviceId: '',
+  deviceName: '',
+  cursor: 0,
+  streamientFolder: 'Streamient',
+  lastSyncAt: 0,
+  lastSyncRequestAt: 0,
+  pendingOauthState: '',
+  pendingOauthVerifier: '',
+  fileStates: {},
+  pendingOperations: [],
+};
+
+const DEVICE_SETTING_KEYS = ['deviceId', 'deviceName', 'cursor', 'lastSyncAt', 'lastSyncRequestAt', 'pendingOauthState', 'pendingOauthVerifier', 'fileStates', 'pendingOperations'] as const;
+
+class ProjectPicker extends FuzzySuggestModal<ProjectSummary> {
+  private readonly projects: ProjectSummary[];
+  private readonly resolveChoice: (project: ProjectSummary | null) => void;
+  private chosen = false;
+
+  constructor(app: App, projects: ProjectSummary[], resolveChoice: (project: ProjectSummary | null) => void) {
+    super(app);
+    this.projects = projects;
+    this.resolveChoice = resolveChoice;
+    this.setPlaceholder('Choose a Streamient project');
+  }
+
+  getItems(): ProjectSummary[] {
+    return this.projects;
+  }
+
+  getItemText(project: ProjectSummary): string {
+    return project.name;
+  }
+
+  onChooseItem(project: ProjectSummary): void {
+    this.chosen = true;
+    this.resolveChoice(project);
+  }
+
+  onClose(): void {
+    super.onClose();
+    if (!this.chosen) this.resolveChoice(null);
+  }
+}
+
+export default class StreamientSyncPlugin extends Plugin {
+  settings: StreamientSyncSettings = { ...DEFAULT_SETTINGS };
+  private engine!: SyncEngine;
+  private accessToken = '';
+  private accessTokenExpiresAt = 0;
+  private statusBar: HTMLElement | null = null;
+
+  async onload(): Promise<void> {
+    const local = this.app.loadLocalStorage(this.localStorageKey()) || {};
+    Object.assign(this.settings, DEFAULT_SETTINGS, await this.loadData(), local);
+    this.settings.fileStates ||= {};
+    this.settings.pendingOperations ||= [];
+    this.settings.deviceId ||= uuid();
+    this.settings.deviceName ||= Platform.isMobile ? 'Obsidian mobile' : 'Obsidian desktop';
+    await this.saveSettings();
+
+    this.engine = new SyncEngine({ app: this.app, api: () => this.api(), settings: this.settings, saveSettings: () => this.saveSettings() });
+    this.addSettingTab(new StreamientSettingTab(this.app, this));
+    this.addRibbonIcon('refresh-cw', 'Sync with Streamient', () => void this.syncNow());
+    if (!Platform.isMobile) this.statusBar = this.addStatusBarItem();
+    this.refreshStatus();
+
+    this.addCommand({ id: 'sync-now', name: 'Sync now', callback: () => void this.syncNow() });
+    this.addCommand({ id: 'connect', name: 'Connect account', callback: () => void this.startAuthorization() });
+    this.addCommand({ id: 'choose-project', name: 'Choose project', callback: () => void this.chooseProject() });
+
+    this.registerObsidianProtocolHandler('streamient-auth', (parameters) => {
+      void this.finishAuthorization(String(parameters.code || ''), String(parameters.state || ''), String(parameters.error || ''));
+    });
+
+    this.app.workspace.onLayoutReady(() => {
+      this.registerEvent(this.app.vault.on('create', (file) => { if (file instanceof TFile) this.engine.queueFile(file); }));
+      this.registerEvent(this.app.vault.on('modify', (file) => { if (file instanceof TFile) this.engine.queueFile(file); }));
+      this.registerEvent(this.app.vault.on('rename', (file, oldPath) => { if (file instanceof TFile) void this.engine.handleRename(file, oldPath); }));
+      this.registerEvent(this.app.vault.on('delete', (file) => { if (file instanceof TFile) void this.engine.handleDelete(file); }));
+      void this.resumeSync();
+    });
+
+    this.registerInterval(window.setInterval(() => void this.resumeSync(), 30_000));
+    this.registerDomEvent(window, 'online', () => void this.resumeSync());
+    this.registerDomEvent(document, 'visibilitychange', () => { if (!document.hidden) void this.resumeSync(); });
+  }
+
+  async saveSettings(): Promise<void> {
+    const shared = { ...this.settings } as Record<string, unknown>;
+    const local: Record<string, unknown> = {};
+    for (const key of DEVICE_SETTING_KEYS) {
+      local[key] = this.settings[key];
+      delete shared[key];
+    }
+    await this.saveData(shared);
+    this.app.saveLocalStorage(this.localStorageKey(), local);
+    this.refreshStatus();
+  }
+
+  private localStorageKey(): string {
+    return `${this.manifest.id}-device-${this.app.vault.getName().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+  }
+
+  private secretName(): string {
+    return `streamient-sync-${this.settings.deviceId}`;
+  }
+
+  private async setRefreshToken(value: string): Promise<void> {
+    if (value) await Promise.resolve(this.app.secretStorage.setSecret(this.secretName(), value));
+    else await Promise.resolve(this.app.secretStorage.setSecret(this.secretName(), ''));
+  }
+
+  private refreshStatus(): void {
+    if (!this.statusBar) return;
+    if (!this.settings.connectionId) {
+      this.statusBar.setText('Streamient: disconnected');
+      return;
+    }
+    const last = this.settings.lastSyncAt ? new Date(this.settings.lastSyncAt).toLocaleTimeString() : 'never';
+    this.statusBar.setText(`Streamient: ${this.settings.pendingOperations.length} pending · ${last}`);
+  }
+
+  private async token(): Promise<string> {
+    if (this.accessToken && this.accessTokenExpiresAt > Date.now() + 15_000) return this.accessToken;
+    const stored = this.app.secretStorage.getSecret(this.secretName());
+    if (!stored) throw new Error('Connect Streamient first');
+    const tokens = await refreshAccessToken(this.settings.serverUrl, stored);
+    this.accessToken = tokens.access_token;
+    this.accessTokenExpiresAt = Date.now() + tokens.expires_in * 1000;
+    await this.setRefreshToken(tokens.refresh_token);
+    return this.accessToken;
+  }
+
+  api(): StreamientApi {
+    return new StreamientApi(this.settings.serverUrl, () => this.token());
+  }
+
+  async startAuthorization(): Promise<void> {
+    try {
+      this.settings.serverUrl = normalizeServerUrl(this.settings.serverUrl);
+      const verifierBytes = crypto.getRandomValues(new Uint8Array(48));
+      const verifier = base64Url(verifierBytes.buffer);
+      const state = uuid();
+      this.settings.pendingOauthVerifier = verifier;
+      this.settings.pendingOauthState = state;
+      await this.saveSettings();
+      window.open(authorizationUrl(this.settings.serverUrl, state, await pkceChallenge(verifier)), '_blank');
+      new Notice('Complete authorization in your browser');
+    } catch (error) {
+      new Notice(`Streamient authorization failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async finishAuthorization(code: string, state: string, oauthError: string): Promise<void> {
+    try {
+      if (oauthError) throw new Error(oauthError);
+      if (!code || !state || state !== this.settings.pendingOauthState || !this.settings.pendingOauthVerifier) throw new Error('Authorization response is invalid or expired');
+      const tokens = await exchangeAuthorizationCode(this.settings.serverUrl, code, this.settings.pendingOauthVerifier);
+      this.accessToken = tokens.access_token;
+      this.accessTokenExpiresAt = Date.now() + tokens.expires_in * 1000;
+      await this.setRefreshToken(tokens.refresh_token);
+      this.settings.pendingOauthState = '';
+      this.settings.pendingOauthVerifier = '';
+      await this.saveSettings();
+      new Notice('Connected to Streamient');
+      await this.chooseProject();
+    } catch (error) {
+      new Notice(`Streamient authorization failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private projectChoice(projects: ProjectSummary[]): Promise<ProjectSummary | null> {
+    return new Promise((resolve) => new ProjectPicker(this.app, projects, resolve).open());
+  }
+
+  async chooseProject(): Promise<void> {
+    try {
+      const project = await this.projectChoice(await this.api().projects());
+      if (!project) return;
+      const connection = await this.api().connect({
+        project_id: project._id,
+        name: this.app.vault.getName(),
+        streamient_folder: this.settings.streamientFolder,
+        device_id: this.settings.deviceId,
+        device_name: this.settings.deviceName,
+        platform: Platform.isMobile ? 'mobile' : 'desktop',
+      });
+      if (!connection.enabled) await this.api().updateConnection(connection.id, { enabled: true });
+      this.settings.connectionId = connection.id;
+      this.settings.projectId = project._id;
+      this.settings.projectName = project.name;
+      this.settings.streamientFolder = connection.streamient_folder;
+      this.settings.cursor = 0;
+      this.settings.fileStates = {};
+      this.settings.pendingOperations = [];
+      await this.saveSettings();
+      await this.engine.fullSync(true);
+    } catch (error) {
+      new Notice(`Could not choose Streamient project: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    try {
+      if (this.settings.connectionId) await this.api().updateConnection(this.settings.connectionId, { enabled: false });
+    } catch (error) {
+      console.warn('Streamient disconnect request failed', error);
+    }
+    await this.setRefreshToken('');
+    this.accessToken = '';
+    this.accessTokenExpiresAt = 0;
+    Object.assign(this.settings, { connectionId: '', projectId: '', projectName: '', cursor: 0, fileStates: {}, pendingOperations: [] });
+    await this.saveSettings();
+    new Notice('Disconnected from Streamient. Synced knowledge remains.');
+  }
+
+  async syncNow(): Promise<void> {
+    if (!this.engine.connected()) {
+      new Notice('Connect Streamient and choose a project first');
+      return;
+    }
+    try {
+      await this.engine.fullSync(false);
+    } catch (error) {
+      new Notice(`Streamient sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  private async resumeSync(): Promise<void> {
+    if (!this.engine.connected() || !navigator.onLine) return;
+    try {
+      await this.engine.flush();
+      await this.engine.pull();
+    } catch (error) {
+      console.warn('Streamient background sync deferred', error);
+    }
+  }
+}
+
+class StreamientSettingTab extends PluginSettingTab {
+  private readonly plugin: StreamientSyncPlugin;
+
+  constructor(app: App, plugin: StreamientSyncPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    new Setting(containerEl).setName('Streamient server').setHeading();
+    new Setting(containerEl)
+      .setName('Server URL')
+      .setDesc('Your hosted or self-hosted Streamient URL.')
+      .addText((text) => text.setValue(this.plugin.settings.serverUrl).onChange(async (value) => {
+        this.plugin.settings.serverUrl = normalizeServerUrl(value);
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('Account')
+      .setDesc(this.plugin.settings.connectionId ? `Connected to ${this.plugin.settings.projectName}` : 'Not connected')
+      .addButton((button) => button.setButtonText(this.plugin.settings.connectionId ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization()))
+      .addButton((button) => button.setButtonText('Disconnect').setDisabled(!this.plugin.settings.connectionId).onClick(() => void this.plugin.disconnect()));
+    new Setting(containerEl)
+      .setName('Project')
+      .setDesc(this.plugin.settings.projectName || 'Choose after signing in')
+      .addButton((button) => button.setButtonText('Choose project').onClick(() => void this.plugin.chooseProject()));
+    new Setting(containerEl)
+      .setName('Streamient folder')
+      .setDesc('New Streamient Notes are created here. Memories use its Memories subfolder.')
+      .addText((text) => text.setValue(this.plugin.settings.streamientFolder).onChange(async (value) => {
+        this.plugin.settings.streamientFolder = value.trim() || 'Streamient';
+        if (this.plugin.settings.connectionId) await this.plugin.api().updateConnection(this.plugin.settings.connectionId, { streamient_folder: this.plugin.settings.streamientFolder });
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('Device name')
+      .setDesc('Shown in Streamient sync status and conflict history.')
+      .addText((text) => text.setValue(this.plugin.settings.deviceName).onChange(async (value) => {
+        this.plugin.settings.deviceName = value.trim();
+        await this.plugin.saveSettings();
+      }));
+    new Setting(containerEl)
+      .setName('Sync now')
+      .setDesc(this.plugin.settings.lastSyncAt ? `Last completed ${new Date(this.plugin.settings.lastSyncAt).toLocaleString()}` : 'No completed sync yet')
+      .addButton((button) => button.setButtonText('Sync').setCta().setDisabled(!this.plugin.settings.connectionId).onClick(() => void this.plugin.syncNow()));
+    containerEl.createEl('p', { cls: 'setting-item-description streamient-disclosure', text: 'Streamient receives readable vault content over TLS so it can index, preview, and edit it. Files are encrypted at rest by Streamient. The plugin includes no telemetry.' });
+  }
+}

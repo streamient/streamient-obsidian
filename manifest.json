@@ -1,0 +1,10 @@
+{
+  "id": "streamient-sync",
+  "name": "Streamient Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Synchronize vault content with your Streamient knowledge project.",
+  "author": "Streamient",
+  "authorUrl": "https://streamient.com",
+  "isDesktopOnly": false
+}
