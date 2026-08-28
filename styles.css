@@ -6,3 +6,17 @@
   display: grid;
   gap: 0.5rem;
 }
+
+.streamient-sync-progress {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.streamient-sync-path {
+  overflow: hidden;
+  margin-top: 0.25rem;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

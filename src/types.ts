@@ -26,11 +26,23 @@ export interface StreamientSyncSettings {
   cursor: number;
   streamientFolder: string;
   lastSyncAt: number;
+  lastSyncError: string;
   lastSyncRequestAt: number;
   pendingOauthState: string;
   pendingOauthVerifier: string;
   fileStates: Record<string, FileState>;
   pendingOperations: PendingOperation[];
+}
+
+export type SyncPhase = 'idle' | 'scanning' | 'reconciling' | 'preview' | 'applying' | 'uploading' | 'pulling' | 'complete' | 'failed';
+
+export interface SyncProgress {
+  phase: SyncPhase;
+  active: boolean;
+  current: number;
+  total: number;
+  path: string;
+  error: string;
 }
 
 export interface ProjectSummary {

@@ -1,9 +1,9 @@
-import { App, FuzzySuggestModal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { App, ButtonComponent, FuzzySuggestModal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
 
 import { authorizationUrl, exchangeAuthorizationCode, refreshAccessToken, StreamientApi } from './api';
 import { base64Url, normalizeServerUrl, pkceChallenge, uuid } from './core';
 import { SyncEngine } from './sync';
-import type { ProjectSummary, StreamientSyncSettings } from './types';
+import type { ProjectSummary, StreamientSyncSettings, SyncProgress } from './types';
 
 const DEFAULT_SETTINGS: StreamientSyncSettings = {
   serverUrl: 'https://app.streamient.com',
@@ -16,6 +16,7 @@ const DEFAULT_SETTINGS: StreamientSyncSettings = {
   cursor: 0,
   streamientFolder: 'Streamient',
   lastSyncAt: 0,
+  lastSyncError: '',
   lastSyncRequestAt: 0,
   pendingOauthState: '',
   pendingOauthVerifier: '',
@@ -23,7 +24,7 @@ const DEFAULT_SETTINGS: StreamientSyncSettings = {
   pendingOperations: [],
 };
 
-const DEVICE_SETTING_KEYS = ['authenticated', 'deviceId', 'deviceName', 'cursor', 'lastSyncAt', 'lastSyncRequestAt', 'pendingOauthState', 'pendingOauthVerifier', 'fileStates', 'pendingOperations'] as const;
+const DEVICE_SETTING_KEYS = ['authenticated', 'deviceId', 'deviceName', 'cursor', 'lastSyncAt', 'lastSyncError', 'lastSyncRequestAt', 'pendingOauthState', 'pendingOauthVerifier', 'fileStates', 'pendingOperations'] as const;
 
 class ProjectPicker extends FuzzySuggestModal<ProjectSummary> {
   private readonly projects: ProjectSummary[];
@@ -55,7 +56,8 @@ export default class StreamientSyncPlugin extends Plugin {
   private accessToken = '';
   private accessTokenExpiresAt = 0;
   private statusBar: HTMLElement | null = null;
-  private settingTab!: StreamientSettingTab;
+  private settingTab: StreamientSettingTab | null = null;
+  syncProgress: SyncProgress = { phase: 'idle', active: false, current: 0, total: 0, path: '', error: '' };
 
   async onload(): Promise<void> {
     const local = this.app.loadLocalStorage(this.localStorageKey()) || {};
@@ -67,7 +69,7 @@ export default class StreamientSyncPlugin extends Plugin {
     this.settings.authenticated = Boolean(this.app.secretStorage.getSecret(this.secretName()));
     await this.saveSettings();
 
-    this.engine = new SyncEngine({ app: this.app, api: () => this.api(), settings: this.settings, saveSettings: () => this.saveSettings() });
+    this.engine = new SyncEngine({ app: this.app, api: () => this.api(), settings: this.settings, saveSettings: () => this.saveSettings(), onProgress: (progress) => this.updateSyncProgress(progress) });
     this.settingTab = new StreamientSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
     this.addRibbonIcon('refresh-cw', 'Sync with Streamient', () => void this.syncNow());
@@ -130,12 +132,31 @@ export default class StreamientSyncPlugin extends Plugin {
       this.statusBar.setText('Streamient: choose a project');
       return;
     }
+    if (this.syncProgress.active || this.syncProgress.phase === 'failed') {
+      this.statusBar.setText(`Streamient: ${this.syncStatusText()}`);
+      return;
+    }
     const last = this.settings.lastSyncAt ? new Date(this.settings.lastSyncAt).toLocaleTimeString() : 'never';
     this.statusBar.setText(`Streamient: ${this.settings.pendingOperations.length} pending · ${last}`);
   }
 
   private refreshSettingsTab(): void {
-    this.settingTab.display();
+    this.settingTab?.display();
+  }
+
+  syncStatusText(): string {
+    const progress = this.syncProgress;
+    const labels: Record<SyncProgress['phase'], string> = { idle: 'Idle', scanning: 'Scanning vault', reconciling: 'Reconciling manifest', preview: 'Waiting for confirmation', applying: 'Applying changes', uploading: 'Uploading changes', pulling: 'Pulling changes', complete: 'Sync complete', failed: 'Sync failed' };
+    if (progress.phase === 'failed') return progress.error ? `failed: ${progress.error}` : 'failed';
+    if (progress.active) return progress.total > 0 ? `${labels[progress.phase]} ${Math.min(progress.current, progress.total)}/${progress.total}` : progress.current > 0 ? `${labels[progress.phase]} · ${progress.current}` : labels[progress.phase];
+    if (this.settings.lastSyncError) return `Last sync failed: ${this.settings.lastSyncError}`;
+    return this.settings.lastSyncAt ? `Last completed ${new Date(this.settings.lastSyncAt).toLocaleString()}` : 'No completed sync yet';
+  }
+
+  private updateSyncProgress(progress: SyncProgress): void {
+    this.syncProgress = progress;
+    this.refreshStatus();
+    this.settingTab?.updateSyncStatus();
   }
 
   private async token(): Promise<string> {
@@ -250,6 +271,10 @@ export default class StreamientSyncPlugin extends Plugin {
       new Notice('Connect Streamient and choose a project first');
       return;
     }
+    if (this.engine.busy()) {
+      new Notice(`Streamient sync already running: ${this.syncStatusText()}`);
+      return;
+    }
     try {
       await this.engine.fullSync(false);
     } catch (error) {
@@ -260,7 +285,7 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   private async resumeSync(): Promise<void> {
-    if (!this.engine.connected() || !navigator.onLine) return;
+    if (!this.engine.connected() || this.engine.busy() || !navigator.onLine) return;
     try {
       await this.engine.flush();
       await this.engine.pull();
@@ -272,6 +297,8 @@ export default class StreamientSyncPlugin extends Plugin {
 
 class StreamientSettingTab extends PluginSettingTab {
   private readonly plugin: StreamientSyncPlugin;
+  private syncDescription: HTMLElement | null = null;
+  private syncButton: ButtonComponent | null = null;
 
   constructor(app: App, plugin: StreamientSyncPlugin) {
     super(app, plugin);
@@ -313,10 +340,29 @@ class StreamientSettingTab extends PluginSettingTab {
         this.plugin.settings.deviceName = value.trim();
         await this.plugin.saveSettings();
       }));
-    new Setting(containerEl)
+    const syncSetting = new Setting(containerEl)
       .setName('Sync now')
-      .setDesc(this.plugin.settings.lastSyncAt ? `Last completed ${new Date(this.plugin.settings.lastSyncAt).toLocaleString()}` : 'No completed sync yet')
-      .addButton((button) => button.setButtonText('Sync').setCta().setDisabled(!this.plugin.settings.connectionId).onClick(() => void this.plugin.syncNow()));
+      .setDesc('')
+      .addButton((button) => {
+        this.syncButton = button;
+        button.setButtonText('Sync').setCta().onClick(() => void this.plugin.syncNow());
+      });
+    this.syncDescription = syncSetting.descEl;
+    this.updateSyncStatus();
     containerEl.createEl('p', { cls: 'setting-item-description streamient-disclosure', text: 'Streamient receives readable vault content over TLS so it can index, preview, and edit it. Files are encrypted at rest by Streamient. The plugin includes no telemetry.' });
+  }
+
+  updateSyncStatus(): void {
+    if (!this.syncDescription) return;
+    this.syncDescription.empty();
+    this.syncDescription.createDiv({ text: this.plugin.syncStatusText() });
+    const progress = this.plugin.syncProgress;
+    if (progress.active && progress.total > 0) {
+      const bar = this.syncDescription.createEl('progress', { cls: 'streamient-sync-progress' });
+      bar.max = progress.total;
+      bar.value = Math.min(progress.current, progress.total);
+    }
+    if (progress.active && progress.path) this.syncDescription.createDiv({ cls: 'streamient-sync-path', text: progress.path });
+    this.syncButton?.setDisabled(!this.plugin.settings.connectionId || progress.active);
   }
 }

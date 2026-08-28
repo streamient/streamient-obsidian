@@ -2,13 +2,14 @@ import { App, Modal, Notice, Platform, Setting, TFile, normalizePath } from 'obs
 
 import { coalescePending, isExcludedVaultPath, mimeTypeForPath, normalizeVaultPath, sha256Hex, uuid, vaultFileKind } from './core';
 import { StreamientApi } from './api';
-import type { FileState, ManifestEntry, PendingOperation, StreamientSyncSettings, SyncAction, SyncChange } from './types';
+import type { FileState, ManifestEntry, PendingOperation, StreamientSyncSettings, SyncAction, SyncChange, SyncPhase, SyncProgress } from './types';
 
 interface SyncEngineOptions {
   app: App;
   api: () => StreamientApi;
   settings: StreamientSyncSettings;
   saveSettings: () => Promise<void>;
+  onProgress: (progress: SyncProgress) => void;
 }
 
 class SyncPreviewModal extends Modal {
@@ -45,22 +46,48 @@ export class SyncEngine {
   private readonly getApi: () => StreamientApi;
   private readonly settings: StreamientSyncSettings;
   private readonly saveSettings: () => Promise<void>;
+  private readonly onProgress: (progress: SyncProgress) => void;
   private readonly suppressContent = new Map<string, string>();
   private readonly suppressRename = new Map<string, string>();
   private readonly suppressTrash = new Set<string>();
   private readonly debounce = new Map<string, number>();
   private flushing = false;
   private syncing = false;
+  private pulling = false;
+  private progressState: SyncProgress = { phase: 'idle', active: false, current: 0, total: 0, path: '', error: '' };
 
   constructor(options: SyncEngineOptions) {
     this.app = options.app;
     this.getApi = options.api;
     this.settings = options.settings;
     this.saveSettings = options.saveSettings;
+    this.onProgress = options.onProgress;
   }
 
   connected(): boolean {
     return Boolean(this.settings.connectionId && this.settings.projectId);
+  }
+
+  busy(): boolean {
+    return this.syncing || this.flushing || this.pulling;
+  }
+
+  private report(phase: SyncPhase, active: boolean, current = 0, total = 0, path = '', error = ''): void {
+    this.progressState = { phase, active, current, total, path, error };
+    this.onProgress({ ...this.progressState });
+  }
+
+  private async recordFailure(error: unknown): Promise<void> {
+    const message = error instanceof Error ? error.message : String(error);
+    this.settings.lastSyncError = message;
+    this.report('failed', false, this.progressState.current, this.progressState.total, this.progressState.path, message);
+    await this.saveSettings();
+  }
+
+  private async recordSuccess(): Promise<void> {
+    this.settings.lastSyncAt = Date.now();
+    this.settings.lastSyncError = '';
+    await this.saveSettings();
   }
 
   private devicePayload(): Record<string, unknown> {
@@ -96,8 +123,10 @@ export class SyncEngine {
 
   async manifest(): Promise<ManifestEntry[]> {
     const entries: ManifestEntry[] = [];
-    for (const file of this.app.vault.getFiles()) {
-      if (!this.included(file)) continue;
+    const files = this.app.vault.getFiles().filter((file) => this.included(file));
+    this.report('scanning', true, 0, files.length);
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
       const state = this.state(file.path);
       let sha256 = state?.sha256 || '';
       if (!state || state.modifiedAt !== file.stat.mtime || state.size !== file.stat.size) sha256 = await sha256Hex(await this.bytes(file));
@@ -111,6 +140,7 @@ export class SyncEngine {
         base_revision: state?.revision || 0,
         in_trash: false,
       });
+      this.report('scanning', true, index + 1, files.length, file.path);
     }
     return entries;
   }
@@ -120,22 +150,37 @@ export class SyncEngine {
   }
 
   async fullSync(confirm = false): Promise<void> {
-    if (!this.connected() || this.syncing) return;
+    if (!this.connected() || this.busy()) return;
     this.syncing = true;
     try {
       const manifest = await this.manifest();
+      this.report('reconciling', true);
       let result = await this.getApi().manifest(this.settings.connectionId, manifest, this.devicePayload(), confirm);
       if (confirm) {
-        if (!await this.preview(result.actions)) return;
+        this.report('preview', true, 0, result.actions.length);
+        if (!await this.preview(result.actions)) {
+          this.report('idle', false);
+          return;
+        }
+        this.report('reconciling', true);
         result = await this.getApi().manifest(this.settings.connectionId, manifest, this.devicePayload(), false);
       }
-      for (const action of result.actions) await this.applyManifestAction(action);
+      this.report('applying', true, 0, result.actions.length);
+      for (let index = 0; index < result.actions.length; index++) {
+        const action = result.actions[index];
+        this.report('applying', true, index, result.actions.length, action.path);
+        await this.applyManifestAction(action);
+        this.report('applying', true, index + 1, result.actions.length, action.path);
+      }
       await this.flush();
       this.settings.cursor = Math.max(this.settings.cursor, result.cursor || 0);
-      this.settings.lastSyncAt = Date.now();
       this.settings.lastSyncRequestAt = result.connection.sync_requested_at ? new Date(result.connection.sync_requested_at).getTime() : this.settings.lastSyncRequestAt;
-      await this.saveSettings();
+      await this.recordSuccess();
+      this.report('complete', false);
       new Notice('Streamient sync complete');
+    } catch (error) {
+      await this.recordFailure(error);
+      throw error;
     } finally {
       this.syncing = false;
     }
@@ -175,7 +220,7 @@ export class SyncEngine {
   queue(operation: PendingOperation): void {
     this.settings.pendingOperations = coalescePending(this.settings.pendingOperations, operation);
     void this.saveSettings();
-    window.setTimeout(() => void this.flush().catch((error) => console.error('Streamient sync failed', error)), 250);
+    if (!this.syncing) window.setTimeout(() => void this.flush().catch((error) => console.error('Streamient sync failed', error)), 250);
   }
 
   queueFile(file: TFile): void {
@@ -255,9 +300,12 @@ export class SyncEngine {
   async flush(): Promise<void> {
     if (!this.connected() || this.flushing || !this.settings.pendingOperations.length) return;
     this.flushing = true;
+    const total = this.settings.pendingOperations.length;
+    let completed = 0;
     try {
       while (this.settings.pendingOperations.length) {
         const pending = this.settings.pendingOperations[0];
+        this.report('uploading', true, completed, total, pending.path);
         const statePath = pending.previousPath || pending.path;
         const state = this.state(pending.path) || this.state(statePath);
         const mutation: Record<string, unknown> = {
@@ -296,34 +344,54 @@ export class SyncEngine {
           await this.applyContent(result.change);
         }
         this.settings.pendingOperations.shift();
+        completed++;
+        this.report('uploading', true, completed, total, pending.path);
         await this.saveSettings();
       }
+      await this.recordSuccess();
+      if (!this.syncing) this.report('complete', false);
+    } catch (error) {
+      if (!this.syncing) await this.recordFailure(error);
+      throw error;
     } finally {
       this.flushing = false;
     }
   }
 
   async pull(): Promise<void> {
-    if (!this.connected()) return;
+    if (!this.connected() || this.busy()) return;
+    this.pulling = true;
     let more = true;
     let requestedAt = 0;
-    while (more) {
-      const result = await this.getApi().changes(this.settings.connectionId, this.settings.cursor, this.settings.deviceId);
-      requestedAt = result.sync_requested_at ? new Date(result.sync_requested_at).getTime() : 0;
-      for (const change of result.changes) {
-		if (change.conflict && change.device_id !== this.settings.deviceId) new Notice(`Streamient conflict resolved for ${change.path}`);
-        const state = this.state(change.path);
-        if (change.device_id === this.settings.deviceId && state?.revision && state.revision >= change.revision) {
+    let completed = 0;
+    try {
+      this.report('pulling', true);
+      while (more) {
+        const result = await this.getApi().changes(this.settings.connectionId, this.settings.cursor, this.settings.deviceId);
+        requestedAt = result.sync_requested_at ? new Date(result.sync_requested_at).getTime() : 0;
+        for (const change of result.changes) {
+		  this.report('pulling', true, completed, 0, change.path);
+		  if (change.conflict && change.device_id !== this.settings.deviceId) new Notice(`Streamient conflict resolved for ${change.path}`);
+          const state = this.state(change.path);
+          if (change.device_id === this.settings.deviceId && state?.revision && state.revision >= change.revision) {
+            this.settings.cursor = Math.max(this.settings.cursor, change.sequence);
+            completed++;
+            continue;
+          }
+          await this.applyContent(change);
           this.settings.cursor = Math.max(this.settings.cursor, change.sequence);
-          continue;
+          completed++;
         }
-        await this.applyContent(change);
-        this.settings.cursor = Math.max(this.settings.cursor, change.sequence);
+        more = result.has_more;
       }
-      more = result.has_more;
+      await this.recordSuccess();
+      this.report('complete', false);
+    } catch (error) {
+      await this.recordFailure(error);
+      throw error;
+    } finally {
+      this.pulling = false;
     }
-    this.settings.lastSyncAt = Date.now();
-    await this.saveSettings();
     if (requestedAt > this.settings.lastSyncRequestAt) {
       this.settings.lastSyncRequestAt = requestedAt;
       await this.saveSettings();
