@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: StreamientSyncSettings = {
   connectionId: '',
   projectId: '',
   projectName: '',
+  authenticated: false,
   deviceId: '',
   deviceName: '',
   cursor: 0,
@@ -22,7 +23,7 @@ const DEFAULT_SETTINGS: StreamientSyncSettings = {
   pendingOperations: [],
 };
 
-const DEVICE_SETTING_KEYS = ['deviceId', 'deviceName', 'cursor', 'lastSyncAt', 'lastSyncRequestAt', 'pendingOauthState', 'pendingOauthVerifier', 'fileStates', 'pendingOperations'] as const;
+const DEVICE_SETTING_KEYS = ['authenticated', 'deviceId', 'deviceName', 'cursor', 'lastSyncAt', 'lastSyncRequestAt', 'pendingOauthState', 'pendingOauthVerifier', 'fileStates', 'pendingOperations'] as const;
 
 class ProjectPicker extends FuzzySuggestModal<ProjectSummary> {
   private readonly projects: ProjectSummary[];
@@ -61,6 +62,7 @@ export default class StreamientSyncPlugin extends Plugin {
   private accessToken = '';
   private accessTokenExpiresAt = 0;
   private statusBar: HTMLElement | null = null;
+  private settingTab!: StreamientSettingTab;
 
   async onload(): Promise<void> {
     const local = this.app.loadLocalStorage(this.localStorageKey()) || {};
@@ -69,10 +71,12 @@ export default class StreamientSyncPlugin extends Plugin {
     this.settings.pendingOperations ||= [];
     this.settings.deviceId ||= uuid();
     this.settings.deviceName ||= Platform.isMobile ? 'Obsidian mobile' : 'Obsidian desktop';
+    this.settings.authenticated = Boolean(this.app.secretStorage.getSecret(this.secretName()));
     await this.saveSettings();
 
     this.engine = new SyncEngine({ app: this.app, api: () => this.api(), settings: this.settings, saveSettings: () => this.saveSettings() });
-    this.addSettingTab(new StreamientSettingTab(this.app, this));
+    this.settingTab = new StreamientSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
     this.addRibbonIcon('refresh-cw', 'Sync with Streamient', () => void this.syncNow());
     if (!Platform.isMobile) this.statusBar = this.addStatusBarItem();
     this.refreshStatus();
@@ -125,12 +129,20 @@ export default class StreamientSyncPlugin extends Plugin {
 
   private refreshStatus(): void {
     if (!this.statusBar) return;
+    if (!this.settings.authenticated) {
+      this.statusBar.setText('Streamient: signed out');
+      return;
+    }
     if (!this.settings.connectionId) {
-      this.statusBar.setText('Streamient: disconnected');
+      this.statusBar.setText('Streamient: choose a project');
       return;
     }
     const last = this.settings.lastSyncAt ? new Date(this.settings.lastSyncAt).toLocaleTimeString() : 'never';
     this.statusBar.setText(`Streamient: ${this.settings.pendingOperations.length} pending · ${last}`);
+  }
+
+  private refreshSettingsTab(): void {
+    this.settingTab.display();
   }
 
   private async token(): Promise<string> {
@@ -172,9 +184,11 @@ export default class StreamientSyncPlugin extends Plugin {
       this.accessToken = tokens.access_token;
       this.accessTokenExpiresAt = Date.now() + tokens.expires_in * 1000;
       await this.setRefreshToken(tokens.refresh_token);
+      this.settings.authenticated = true;
       this.settings.pendingOauthState = '';
       this.settings.pendingOauthVerifier = '';
       await this.saveSettings();
+      this.refreshSettingsTab();
       new Notice('Connected to Streamient');
       await this.chooseProject();
     } catch (error) {
@@ -187,6 +201,10 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   async chooseProject(): Promise<void> {
+    if (!this.settings.authenticated) {
+      new Notice('Sign in to Streamient first');
+      return;
+    }
     try {
       const project = await this.projectChoice(await this.api().projects());
       if (!project) return;
@@ -207,9 +225,12 @@ export default class StreamientSyncPlugin extends Plugin {
       this.settings.fileStates = {};
       this.settings.pendingOperations = [];
       await this.saveSettings();
+      this.refreshSettingsTab();
       await this.engine.fullSync(true);
     } catch (error) {
       new Notice(`Could not choose Streamient project: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.refreshSettingsTab();
     }
   }
 
@@ -222,8 +243,9 @@ export default class StreamientSyncPlugin extends Plugin {
     await this.setRefreshToken('');
     this.accessToken = '';
     this.accessTokenExpiresAt = 0;
-    Object.assign(this.settings, { connectionId: '', projectId: '', projectName: '', cursor: 0, fileStates: {}, pendingOperations: [] });
+    Object.assign(this.settings, { authenticated: false, connectionId: '', projectId: '', projectName: '', cursor: 0, fileStates: {}, pendingOperations: [] });
     await this.saveSettings();
+    this.refreshSettingsTab();
     new Notice('Disconnected from Streamient. Synced knowledge remains.');
   }
 
@@ -236,6 +258,8 @@ export default class StreamientSyncPlugin extends Plugin {
       await this.engine.fullSync(false);
     } catch (error) {
       new Notice(`Streamient sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.refreshSettingsTab();
     }
   }
 
@@ -271,13 +295,13 @@ class StreamientSettingTab extends PluginSettingTab {
       }));
     new Setting(containerEl)
       .setName('Account')
-      .setDesc(this.plugin.settings.connectionId ? `Connected to ${this.plugin.settings.projectName}` : 'Not connected')
-      .addButton((button) => button.setButtonText(this.plugin.settings.connectionId ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization()))
-      .addButton((button) => button.setButtonText('Disconnect').setDisabled(!this.plugin.settings.connectionId).onClick(() => void this.plugin.disconnect()));
+      .setDesc(this.plugin.settings.authenticated ? 'Signed in' : 'Not signed in')
+      .addButton((button) => button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization()))
+      .addButton((button) => button.setButtonText('Disconnect').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.disconnect()));
     new Setting(containerEl)
       .setName('Project')
-      .setDesc(this.plugin.settings.projectName || 'Choose after signing in')
-      .addButton((button) => button.setButtonText('Choose project').onClick(() => void this.plugin.chooseProject()));
+      .setDesc(this.plugin.settings.projectName || (this.plugin.settings.authenticated ? 'Choose a project' : 'Sign in first'))
+      .addButton((button) => button.setButtonText('Choose project').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.chooseProject()));
     new Setting(containerEl)
       .setName('Streamient folder')
       .setDesc('New Streamient Notes are created here. Memories use its Memories subfolder.')

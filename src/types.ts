@@ -20,6 +20,7 @@ export interface StreamientSyncSettings {
   connectionId: string;
   projectId: string;
   projectName: string;
+  authenticated: boolean;
   deviceId: string;
   deviceName: string;
   cursor: number;
