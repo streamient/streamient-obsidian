@@ -11,18 +11,21 @@ Synchronize Markdown, Canvas, Bases, documents, and attachments between an Obsid
 - Streamient Notes by default and opt-in Memories through `streamient_type: memory` frontmatter.
 - Obsidian trash integration and recoverable conflict revisions.
 
-## Beta Installation
+## Installation
 
-Streamient Sync is available through BRAT while its Obsidian Community directory submission is under review. Version 0.1.7 and later require Obsidian 1.13.0 or newer.
+Streamient Sync requires Obsidian 1.13.0 or newer.
 
-### BRAT
+### Obsidian Community Plugins
 
-1. Install and enable **BRAT** from Obsidian Community plugins.
-2. Run **BRAT: Add a beta plugin for testing** from the command palette.
-3. Enter `https://github.com/streamient/streamient-obsidian`.
-4. Enable **Streamient Sync** under Community plugins.
+1. Open **Settings → Community plugins** in Obsidian.
+2. Select **Browse** and search for **Streamient Sync**.
+3. Select **Install**, then **Enable**.
 
-BRAT installs and updates the versioned files from [GitHub Releases](https://github.com/streamient/streamient-obsidian/releases).
+[Open Streamient Sync in the Obsidian Community directory](https://community.obsidian.md/plugins/streamient-sync).
+
+### Prereleases with BRAT
+
+To test prerelease builds, install [BRAT](https://obsidian.md/plugins?id=obsidian42-brat), add `https://github.com/streamient/streamient-obsidian`, and enable **Streamient Sync**. Stable users should install from Obsidian Community Plugins.
 
 ### Manual Installation
 
@@ -36,6 +39,8 @@ BRAT installs and updates the versioned files from [GitHub Releases](https://git
 2. Enter `https://app.streamient.com` or your self-hosted Streamient URL and select **Sign in**.
 3. Authorize `vault:read` and `vault:write` access.
 4. Choose a project, review the first-sync preview, and start synchronization.
+
+See the [Streamient Obsidian Sync guide](https://docs.streamient.com/guide/obsidian-sync/) for configuration, conflict handling, privacy, and self-hosted server settings.
 
 ## Privacy and network disclosure
 
