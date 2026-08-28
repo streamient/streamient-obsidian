@@ -8,9 +8,9 @@ const types = fs.readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8
 const styles = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
 test('reports every sync phase and persists success or failure state', () => {
-  assert.match(types, /SyncPhase = 'idle' \| 'scanning' \| 'reconciling' \| 'preview' \| 'applying' \| 'uploading' \| 'pulling' \| 'complete' \| 'failed'/);
+  assert.match(types, /SyncPhase = 'idle' \| 'scanning' \| 'reconciling' \| 'preview' \| 'applying' \| 'uploading' \| 'trashing' \| 'renaming' \| 'pulling' \| 'complete' \| 'failed'/);
   assert.match(types, /lastSyncError: string/);
-  for (const phase of ['scanning', 'reconciling', 'preview', 'applying', 'uploading', 'pulling', 'complete', 'failed']) assert.match(sync, new RegExp(`report\\('${phase}'`));
+  for (const phase of ['scanning', 'reconciling', 'preview', 'applying', 'pulling', 'complete', 'failed']) assert.match(sync, new RegExp(`report\\('${phase}'`));
   assert.match(sync, /this\.settings\.lastSyncAt = Date\.now\(\)/);
   assert.match(sync, /this\.settings\.lastSyncError = message/);
   assert.match(sync, /if \(!this\.syncing\) window\.setTimeout/);
@@ -23,4 +23,10 @@ test('updates the settings progress bar and status bar incrementally', () => {
   assert.match(main, /this\.settingTab\?\.updateSyncStatus\(\)/);
   assert.match(styles, /\.streamient-sync-progress/);
   assert.match(styles, /\.streamient-sync-path/);
+});
+
+test('labels trash and rename mutations without calling them uploads', () => {
+  assert.match(sync, /pending\.operation === 'trash' \? 'trashing' : pending\.operation === 'rename' \? 'renaming' : 'uploading'/);
+  assert.match(main, /trashing: 'Moving items to trash'/);
+  assert.match(main, /renaming: 'Renaming items'/);
 });

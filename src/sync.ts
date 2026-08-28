@@ -305,7 +305,8 @@ export class SyncEngine {
     try {
       while (this.settings.pendingOperations.length) {
         const pending = this.settings.pendingOperations[0];
-        this.report('uploading', true, completed, total, pending.path);
+        const phase: SyncPhase = pending.operation === 'trash' ? 'trashing' : pending.operation === 'rename' ? 'renaming' : 'uploading';
+        this.report(phase, true, completed, total, pending.path);
         const statePath = pending.previousPath || pending.path;
         const state = this.state(pending.path) || this.state(statePath);
         const mutation: Record<string, unknown> = {
@@ -345,7 +346,7 @@ export class SyncEngine {
         }
         this.settings.pendingOperations.shift();
         completed++;
-        this.report('uploading', true, completed, total, pending.path);
+        this.report(phase, true, completed, total, pending.path);
         await this.saveSettings();
       }
       await this.recordSuccess();

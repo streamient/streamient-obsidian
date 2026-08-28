@@ -34,7 +34,7 @@ export interface StreamientSyncSettings {
   pendingOperations: PendingOperation[];
 }
 
-export type SyncPhase = 'idle' | 'scanning' | 'reconciling' | 'preview' | 'applying' | 'uploading' | 'pulling' | 'complete' | 'failed';
+export type SyncPhase = 'idle' | 'scanning' | 'reconciling' | 'preview' | 'applying' | 'uploading' | 'trashing' | 'renaming' | 'pulling' | 'complete' | 'failed';
 
 export interface SyncProgress {
   phase: SyncPhase;

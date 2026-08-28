@@ -147,7 +147,7 @@ export default class StreamientSyncPlugin extends Plugin {
 
   syncStatusText(): string {
     const progress = this.syncProgress;
-    const labels: Record<SyncProgress['phase'], string> = { idle: 'Idle', scanning: 'Scanning vault', reconciling: 'Reconciling manifest', preview: 'Waiting for confirmation', applying: 'Applying changes', uploading: 'Uploading changes', pulling: 'Pulling changes', complete: 'Sync complete', failed: 'Sync failed' };
+    const labels: Record<SyncProgress['phase'], string> = { idle: 'Idle', scanning: 'Scanning vault', reconciling: 'Reconciling manifest', preview: 'Waiting for confirmation', applying: 'Applying changes', uploading: 'Uploading content', trashing: 'Moving items to trash', renaming: 'Renaming items', pulling: 'Pulling changes', complete: 'Sync complete', failed: 'Sync failed' };
     if (progress.phase === 'failed') return progress.error ? `failed: ${progress.error}` : 'failed';
     if (progress.active) return progress.total > 0 ? `${labels[progress.phase]} ${Math.min(progress.current, progress.total)}/${progress.total}` : progress.current > 0 ? `${labels[progress.phase]} · ${progress.current}` : labels[progress.phase];
     if (this.settings.lastSyncError) return `Last sync failed: ${this.settings.lastSyncError}`;
