@@ -217,7 +217,12 @@ export function accountKey(accountId: string, userId: string): string {
 }
 
 export function secretStorageId(deviceId: string, key: string): string {
-  return `streamient-sync-${deviceId}-${key}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  let hash = 0xcbf29ce484222325n;
+  for (const character of `${deviceId}\0${key}`) {
+    hash ^= BigInt(character.codePointAt(0) || 0);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `streamient-sync-${hash.toString(16).padStart(16, '0')}`;
 }
 
 export function retainOwnedOperations(operations: PendingOperation[], profile: ProjectSyncProfile, profiles: ProjectSyncProfile[]): PendingOperation[] {

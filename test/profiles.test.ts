@@ -41,6 +41,8 @@ test('uses only Obsidian-compatible characters for per-account secret IDs', () =
   const id = secretStorageId('Device_A', accountKey('tenant:work', 'user@example.com'));
   assert.match(id, /^[a-z0-9-]+$/);
   assert.doesNotMatch(id, /:/);
+  assert.ok(id.length <= 64);
+  assert.equal(id, secretStorageId('Device_A', accountKey('tenant:work', 'user@example.com')));
   assert.notEqual(secretStorageId('device-1', accountKey('tenant-1', 'user-1')), secretStorageId('device-1', accountKey('tenant-2', 'user-1')));
 });
 
