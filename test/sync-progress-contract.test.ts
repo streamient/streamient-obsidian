@@ -2,27 +2,44 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
+const api = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
 const main = fs.readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const sync = fs.readFileSync(new URL('../src/sync.ts', import.meta.url), 'utf8');
 const types = fs.readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 
-test('reports every sync phase and persists success or failure state', () => {
-  assert.match(types, /SyncPhase = 'idle' \| 'scanning' \| 'reconciling' \| 'preview' \| 'applying' \| 'uploading' \| 'trashing' \| 'renaming' \| 'pulling' \| 'complete' \| 'failed'/);
-  assert.match(types, /lastSyncError: string/);
-  for (const phase of ['scanning', 'reconciling', 'preview', 'applying', 'pulling', 'complete', 'failed']) assert.match(sync, new RegExp(`report\\('${phase}'`));
-  assert.match(sync, /this\.settings\.lastSyncAt = Date\.now\(\)/);
-  assert.match(sync, /this\.settings\.lastSyncError = message/);
-  assert.match(sync, /if \(!this\.syncing\) window\.setTimeout/);
+test('reports scoped project phases and persists success or failure state', () => {
+  assert.match(types, /SyncPhase = 'idle'.*'stopping' \| 'paused' \| 'complete' \| 'failed'/);
+  assert.match(types, /profileId: string/);
+  for (const phase of ['scanning', 'reconciling', 'preview', 'applying', 'pulling', 'complete', 'failed']) assert.ok(sync.includes(`report('${phase}'`));
+  assert.match(sync, /this\.state\.lastSyncAt = Date\.now\(\)/);
+  assert.match(sync, /this\.state\.lastSyncError = message/);
+  assert.match(sync, /now - this\.lastCheckpointAt < 1000/);
 });
 
-test('updates the settings progress bar and status bar incrementally', () => {
+test('updates progress incrementally and exposes per-project abort controls', () => {
   assert.match(main, /onProgress: \(progress\) => this\.updateSyncProgress\(progress\)/);
   assert.match(main, /createEl\('progress', \{ cls: 'streamient-sync-progress' \}\)/);
-  assert.match(main, /Streamient sync already running/);
-  assert.match(main, /this\.settingTab\?\.updateSyncStatus\(\)/);
+  assert.match(main, /setButtonText\('Abort'\)\.setDestructive\(\)/);
+  assert.match(main, /this\.settingTab\?\.updateSyncStatus\(progress\.profileId\)/);
   assert.match(styles, /\.streamient-sync-progress/);
   assert.match(styles, /\.streamient-sync-path/);
+});
+
+test('aborts cooperatively, cancels partial uploads, and waits for manual resume', () => {
+  assert.match(sync, /new AbortController\(\)/);
+  assert.match(sync, /this\.controller\.abort\(\)/);
+  assert.match(sync, /this\.state\.paused = true/);
+  assert.match(sync, /signal\.addEventListener\('abort', \(\) => modal\.close\(\)/);
+  assert.match(api, /await this\.cancelUpload\(session\.id\)/);
+  assert.match(main, /if \(!engine \|\| state\.paused \|\| state\.needsReview/);
+});
+
+test('applies manifest uploads directly instead of persisting one queued operation per file', () => {
+  const block = sync.slice(sync.indexOf('private async applyManifestAction'), sync.indexOf('queue(operation'));
+  assert.match(block, /await this\.applyOperation/);
+  assert.doesNotMatch(block, /this\.queue\(/);
+  assert.match(sync, /\(index \+ 1\) % 25 === 0/);
 });
 
 test('labels trash and rename mutations without calling them uploads', () => {

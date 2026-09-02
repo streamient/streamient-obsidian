@@ -20,3 +20,29 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.streamient-project-profile {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border: 0.0625rem solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.streamient-scope-list {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.streamient-scope-path {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.streamient-scope-path span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

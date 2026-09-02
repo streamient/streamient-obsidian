@@ -13,8 +13,9 @@ test('paces all Obsidian sync traffic below the dedicated server limit', () => {
   assert.match(api, /response\.headers\?\.\['retry-after'\]/);
 });
 
-test('reuses one paced API client across the complete sync', () => {
-  assert.match(main, /private apiClient: StreamientApi \| null = null/);
-  assert.match(main, /if \(!this\.apiClient \|\| this\.apiClient\.serverUrl !== serverUrl\) this\.apiClient = new StreamientApi/);
-  assert.match(main, /return this\.apiClient/);
+test('reuses one paced API client per authorized account', () => {
+  assert.match(main, /apiClients = new Map<string, StreamientApi>/);
+  assert.match(main, /const existing = this\.apiClients\.get\(key\)/);
+  assert.match(main, /this\.apiClients\.set\(key, client\)/);
+  assert.match(main, /api: \(\) => this\.api\(profile\.accountKey\)/);
 });

@@ -1,9 +1,9 @@
 {
   "id": "streamient-sync",
   "name": "Streamient Sync",
-  "version": "0.1.8",
+  "version": "0.2.0",
   "minAppVersion": "1.13.0",
-  "description": "Synchronize vault content with your Streamient knowledge project.",
+  "description": "Synchronize scoped vault content with multiple Streamient projects.",
   "author": "Streamient",
   "authorUrl": "https://streamient.com",
   "isDesktopOnly": false

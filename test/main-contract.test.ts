@@ -5,31 +5,39 @@ import test from 'node:test';
 const source = fs.readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 const types = fs.readFileSync(new URL('../src/types.ts', import.meta.url), 'utf8');
 
-test('keeps authentication device-local and restores it from SecretStorage', () => {
-  assert.match(types, /authenticated: boolean/);
-  assert.match(source, /DEVICE_SETTING_KEYS = \['authenticated'/);
-  assert.match(source, /this\.settings\.authenticated = Boolean\(this\.app\.secretStorage\.getSecret\(this\.secretName\(\)\)\)/);
-  assert.match(source, /this\.settings\.authenticated = true/);
-  assert.match(source, /authenticated: false, connectionId: ''/);
+test('keeps account credentials and project runtime state device-local', () => {
+  assert.match(types, /accounts: Record<string, SyncAccount>/);
+  assert.match(types, /profileStates: Record<string, ProjectSyncState>/);
+  assert.match(source, /const shared = \{ schemaVersion: 2, serverUrl: this\.settings\.serverUrl, profiles: this\.settings\.profiles \}/);
+  assert.match(source, /const local = \{ authenticated: this\.settings\.authenticated, defaultAccountKey: this\.settings\.defaultAccountKey, accounts: this\.settings\.accounts/);
+  assert.match(source, /secretName\(account: string\)/);
+  assert.match(source, /authorizedKeys = Object\.keys\(this\.settings\.accounts\)/);
+  assert.match(source, /await this\.migrateLegacyCredential\(\)/);
+  assert.match(source, /this\.app\.secretStorage\.setSecret\(this\.legacySecretName\(\), ''\)/);
 });
 
-test('rerenders settings after OAuth and connection state transitions', () => {
-  assert.match(source, /await this\.saveSettings\(\);\n\s+this\.refreshSettingsTab\(\);\n\s+new Notice\('Connected to Streamient'\)/);
-  assert.match(source, /desc: this\.plugin\.settings\.authenticated \? 'Signed in' : 'Not signed in'/);
-  assert.match(source, /setDisabled\(!this\.plugin\.settings\.authenticated\)/);
-  assert.ok((source.match(/this\.refreshSettingsTab\(\)/g) || []).length >= 5);
+test('supports a default OAuth account and additional per-project accounts', () => {
+  assert.match(source, /startAuthorization\(mode: 'default' \| 'additional' \| 'profile'/);
+  assert.match(source, /mode !== 'default'/);
+  assert.match(source, /const identity = await identityClient\.account\(\)/);
+  assert.match(source, /accountKey: key/);
+  assert.match(source, /api: \(\) => this\.api\(profile\.accountKey\)/);
+  assert.match(source, /class AccountPicker extends FuzzySuggestModal<SyncAccount>/);
 });
 
-test('uses safe persisted values and searchable declarative settings', () => {
-  assert.match(source, /const savedSettings: unknown = await this\.loadData\(\)/);
-  assert.match(source, /const localSettings: unknown = this\.app\.loadLocalStorage/);
+test('uses safe migration and searchable declarative settings', () => {
+  assert.match(source, /savedSettings = await this\.loadData\(\)/);
+  assert.match(source, /migrateSettings\(savedSettings, localSettings/);
   assert.match(source, /getSettingDefinitions\(\): SettingDefinitionItem\[\]/);
-  assert.match(source, /this\.settingTab\?\.update\(\)/);
+  assert.match(source, /heading: 'Projects'/);
+  assert.match(source, /heading: profile\.projectName/);
   assert.doesNotMatch(source, /\n\s+display\(\): void/);
 });
 
-test('connects directly from the project picker without an onClose race', () => {
-  assert.match(source, /onChooseItem\(project: ProjectSummary\): void \{\n\s+this\.choose\(project\)/);
-  assert.match(source, /new ProjectPicker\(this\.app, projects, \(project\) => void this\.connectProject\(project\)\)\.open\(\)/);
-  assert.doesNotMatch(source, /projectChoice|resolveChoice|onClose\(\)/);
+test('adds a project profile without automatically starting synchronization', () => {
+  assert.match(source, /new ProjectPicker\(this\.app, projects, \(project\) => void this\.connectProject\(project, key\)\)\.open\(\)/);
+  const connectBlock = source.slice(source.indexOf('private async connectProject'), source.indexOf('async disconnect'));
+  assert.match(connectBlock, /createProjectState\(\)/);
+  assert.doesNotMatch(connectBlock, /fullSync/);
+  assert.match(connectBlock, /Review its first sync before starting/);
 });

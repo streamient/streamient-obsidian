@@ -1,10 +1,13 @@
 # Streamient Sync
 
-Synchronize Markdown, Canvas, Bases, documents, and attachments between an Obsidian vault and a hosted or self-hosted Streamient project. The plugin runs inside Obsidian; nothing is installed on the Streamient server.
+Synchronize Markdown, Canvas, Bases, documents, and attachments between one Obsidian vault and multiple hosted or self-hosted Streamient projects. The plugin runs inside Obsidian; nothing is installed on the Streamient server.
 
 ## Features
 
 - Two-way synchronization on desktop and mobile.
+- Multiple Streamient projects and OAuth accounts in one vault.
+- Per-project Off, selected folders/files, or entire-vault scope for extra vault content.
+- Reviewable first sync with cooperative Abort and manual Resume.
 - Canonical, byte-preserved Markdown.
 - Resumable encrypted attachment uploads.
 - Offline queue, revision cursors, and multiple-device idempotency.
@@ -37,11 +40,16 @@ To test prerelease builds, install [BRAT](https://obsidian.md/plugins?id=obsidia
 
 1. Open **Settings → Streamient Sync**.
 2. Enter `https://app.streamient.com` or your self-hosted Streamient URL and select **Sign in**.
-3. Authorize `vault:read` and `vault:write` access.
-4. Choose a project, review the first-sync preview, and start synchronization.
+3. Authorize `vault:read` and `vault:write` access. This becomes the default account.
+4. Add one or more projects. Use **Add account** to authorize a separate work or personal account without signing out the default account.
+5. Each project defaults to `Streamient/<Project name>`. Project-folder edits always synchronize both ways.
+6. Optionally enable extra vault content for that project and choose individual files, folders, or the unassigned remainder of the vault.
+7. Review transfer counts and bytes, then explicitly start the first sync.
+
+Projects synchronize sequentially. **Abort** stops after the current request or upload chunk, removes an incomplete upload, and leaves completed work intact. The project remains paused until **Resume** is selected.
 
 ## Privacy and network disclosure
 
-Streamient Sync requires a Streamient account and connects only to the configured Streamient server. To provide full-vault synchronization, the plugin enumerates all user-visible vault files before applying the exclusions below. Vault content is sent over TLS in server-readable form so Streamient can index, preview, and edit it. The Streamient server encrypts synchronized files at rest. OAuth refresh credentials use Obsidian SecretStorage. The plugin contains no advertising, analytics, or telemetry.
+Streamient Sync requires a Streamient account and connects only to the configured Streamient server. The plugin enumerates only managed project folders and optional vault content assigned to each project. Vault content is sent over TLS in server-readable form so Streamient can index, preview, and edit it. The Streamient server encrypts synchronized files at rest. Every OAuth account has a separate refresh credential in Obsidian SecretStorage. The plugin contains no advertising, analytics, or telemetry.
 
 The plugin excludes `.obsidian`, `.git`, `.trash`, other dot-folders, OS metadata, and temporary files.

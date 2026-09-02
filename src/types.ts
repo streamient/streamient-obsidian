@@ -15,34 +15,80 @@ export interface PendingOperation {
   queuedAt: number;
 }
 
-export interface StreamientSyncSettings {
-  serverUrl: string;
-  connectionId: string;
+export type VaultScopeMode = 'off' | 'selected' | 'all';
+export type ScopePathKind = 'file' | 'folder';
+
+export interface SyncScopePath {
+  path: string;
+  kind: ScopePathKind;
+}
+
+export interface ProjectSyncProfile {
+  id: string;
+  accountKey: string;
   projectId: string;
   projectName: string;
-  authenticated: boolean;
-  deviceId: string;
-  deviceName: string;
-  cursor: number;
+  connectionId: string;
   streamientFolder: string;
+  vaultMode: VaultScopeMode;
+  selectedPaths: SyncScopePath[];
+}
+
+export interface ProjectSyncState {
+  cursor: number;
   lastSyncAt: number;
   lastSyncError: string;
   lastSyncRequestAt: number;
-  pendingOauthState: string;
-  pendingOauthVerifier: string;
   fileStates: Record<string, FileState>;
   pendingOperations: PendingOperation[];
+  paused: boolean;
+  needsReview: boolean;
 }
 
-export type SyncPhase = 'idle' | 'scanning' | 'reconciling' | 'preview' | 'applying' | 'uploading' | 'trashing' | 'renaming' | 'pulling' | 'complete' | 'failed';
+export interface StreamientSyncSettings {
+  schemaVersion: 2;
+  serverUrl: string;
+  authenticated: boolean;
+  defaultAccountKey: string;
+  accounts: Record<string, SyncAccount>;
+  deviceId: string;
+  deviceName: string;
+  pendingOauthState: string;
+  pendingOauthVerifier: string;
+  pendingOauthMode: 'default' | 'additional' | 'profile';
+  pendingOauthProfileId: string;
+  profiles: ProjectSyncProfile[];
+  profileStates: Record<string, ProjectSyncState>;
+}
+
+export type SyncPhase = 'idle' | 'scanning' | 'reconciling' | 'preview' | 'applying' | 'uploading' | 'trashing' | 'renaming' | 'pulling' | 'stopping' | 'paused' | 'complete' | 'failed';
 
 export interface SyncProgress {
+  profileId: string;
+  projectName: string;
   phase: SyncPhase;
   active: boolean;
   current: number;
   total: number;
   path: string;
   error: string;
+}
+
+export interface SyncAccount {
+  key: string;
+  accountId: string;
+  accountName: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  serverUrl: string;
+}
+
+export interface AccountSummary {
+  id: string;
+  name: string;
+  role: string;
+  user: { id: string; name: string; email: string };
 }
 
 export interface ProjectSummary {
@@ -71,6 +117,25 @@ export interface ManifestEntry {
   modified_at: string;
   base_revision: number;
   in_trash: boolean;
+}
+
+export interface ManifestScope {
+  vault_mode: VaultScopeMode;
+  selected_paths: SyncScopePath[];
+  excluded_paths: SyncScopePath[];
+}
+
+export interface ManifestSummary {
+  total: number;
+  counts: Record<SyncAction['action'], number>;
+  bytes: { upload: number; download: number };
+}
+
+export interface ManifestResult {
+  actions: SyncAction[];
+  summary: ManifestSummary;
+  cursor: number;
+  connection: ConnectionSummary;
 }
 
 export interface SyncAction {

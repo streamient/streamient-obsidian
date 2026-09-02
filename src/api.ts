@@ -2,7 +2,7 @@ import { requestUrl } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 import { manifestBatches, normalizeServerUrl, sha256Hex, UPLOAD_CHUNK_SIZE, uuid } from './core';
-import type { ConnectionSummary, ManifestEntry, MutationResult, ProjectSummary, SyncAction, SyncChange } from './types';
+import type { AccountSummary, ConnectionSummary, ManifestEntry, ManifestResult, ManifestScope, MutationResult, ProjectSummary, SyncChange } from './types';
 
 const CLIENT_ID = 'streamient-obsidian';
 const REDIRECT_URI = 'obsidian://streamient-auth';
@@ -27,6 +27,14 @@ export class StreamientApiError extends Error {
   }
 }
 
+export class StreamientRequestCancelledError extends Error {
+  constructor() {
+    super('Streamient request canceled');
+  }
+}
+
+export class StreamientUploadCancelledError extends StreamientRequestCancelledError {}
+
 function jsonBody(value: unknown): string {
   return JSON.stringify(value);
 }
@@ -36,7 +44,7 @@ function responseError(response: { status: number; json?: unknown; text?: string
   return new StreamientApiError(payload.error || response.text || `Streamient request failed (${response.status})`, response.status, payload.code || '');
 }
 
-export function authorizationUrl(serverUrl: string, state: string, challenge: string): string {
+export function authorizationUrl(serverUrl: string, state: string, challenge: string, forceLogin = false): string {
   const server = normalizeServerUrl(serverUrl);
   const url = new URL(`${server}/oauth/authorize`);
   url.searchParams.set('client_id', CLIENT_ID);
@@ -47,6 +55,7 @@ export function authorizationUrl(serverUrl: string, state: string, challenge: st
   url.searchParams.set('code_challenge', challenge);
   url.searchParams.set('code_challenge_method', 'S256');
   url.searchParams.set('resource', `${server}/api/v1`);
+  if (forceLogin) url.searchParams.set('prompt', 'login');
   return url.toString();
 }
 
@@ -110,6 +119,10 @@ export class StreamientApi {
     return (await this.request<{ projects: ProjectSummary[] }>('GET', '/projects')).projects;
   }
 
+  async account(): Promise<AccountSummary> {
+    return (await this.request<{ account: AccountSummary }>('GET', '/account')).account;
+  }
+
   async connections(projectId?: string): Promise<ConnectionSummary[]> {
     const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
     return (await this.request<{ connections: ConnectionSummary[] }>('GET', `/connections${query}`)).connections;
@@ -127,13 +140,15 @@ export class StreamientApi {
     return (await this.request<{ connection: ConnectionSummary }>('PATCH', `/connections/${connectionId}`, data)).connection;
   }
 
-  async manifest(connectionId: string, files: ManifestEntry[], device: Record<string, unknown>, preview = false): Promise<{ actions: SyncAction[]; cursor: number; connection: ConnectionSummary }> {
+  async manifest(connectionId: string, files: ManifestEntry[], scope: ManifestScope, device: Record<string, unknown>, preview = false, summaryOnly = false, signal?: AbortSignal): Promise<ManifestResult> {
     const manifestId = uuid();
     const batches = manifestBatches(files);
     for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      if (signal?.aborted) throw new StreamientRequestCancelledError();
       await this.request('POST', `/connections/${connectionId}/manifest`, { manifest_id: manifestId, batch_index: batchIndex, files: batches[batchIndex], complete: false, ...device });
     }
-    return this.request('POST', `/connections/${connectionId}/manifest`, { manifest_id: manifestId, batch_count: batches.length, complete: true, preview, ...device });
+    if (signal?.aborted) throw new StreamientRequestCancelledError();
+    return this.request('POST', `/connections/${connectionId}/manifest`, { manifest_id: manifestId, batch_count: batches.length, complete: true, preview, summary_only: summaryOnly, scope, ...device });
   }
 
   async mutations(connectionId: string, mutations: Record<string, unknown>[], device: Record<string, unknown>): Promise<{ results: MutationResult[]; cursor: number }> {
@@ -150,27 +165,38 @@ export class StreamientApi {
     return result.upload;
   }
 
-  async upload(connectionId: string, path: string, mimeType: string, content: ArrayBuffer): Promise<string> {
+  async cancelUpload(uploadId: string): Promise<void> {
+    await this.request('DELETE', `/uploads/${uploadId}`);
+  }
+
+  async upload(connectionId: string, path: string, mimeType: string, content: ArrayBuffer, signal?: AbortSignal): Promise<string> {
     const session = await this.createUpload(connectionId, path, mimeType, content);
-    const chunkSize = session.chunk_size || UPLOAD_CHUNK_SIZE;
-    for (let offset = 0; offset < content.byteLength; offset += chunkSize) {
-      const chunk = content.slice(offset, Math.min(offset + chunkSize, content.byteLength));
-      const response = await this.pacedRequest({
-        url: `${this.serverUrl}/api/v1/obsidian/uploads/${session.id}`,
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${await this.accessToken()}`,
-          'Content-Type': 'application/offset+octet-stream',
-          'Upload-Offset': String(offset),
-          'Upload-Length': String(content.byteLength),
-          'Upload-Checksum': `sha256 ${await sha256Hex(chunk)}`,
-        },
-        body: chunk,
-      });
-      if (response.status < 200 || response.status >= 300) throw responseError(response);
+    try {
+      const chunkSize = session.chunk_size || UPLOAD_CHUNK_SIZE;
+      for (let offset = 0; offset < content.byteLength; offset += chunkSize) {
+        if (signal?.aborted) throw new StreamientUploadCancelledError();
+        const chunk = content.slice(offset, Math.min(offset + chunkSize, content.byteLength));
+        const response = await this.pacedRequest({
+          url: `${this.serverUrl}/api/v1/obsidian/uploads/${session.id}`,
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${await this.accessToken()}`,
+            'Content-Type': 'application/offset+octet-stream',
+            'Upload-Offset': String(offset),
+            'Upload-Length': String(content.byteLength),
+            'Upload-Checksum': `sha256 ${await sha256Hex(chunk)}`,
+          },
+          body: chunk,
+        });
+        if (response.status < 200 || response.status >= 300) throw responseError(response);
+      }
+      if (signal?.aborted) throw new StreamientUploadCancelledError();
+      await this.request('POST', `/uploads/${session.id}/complete`);
+      return session.id;
+    } catch (error) {
+      if (signal?.aborted || error instanceof StreamientUploadCancelledError) await this.cancelUpload(session.id).catch(() => {});
+      throw error;
     }
-    await this.request('POST', `/uploads/${session.id}/complete`);
-    return session.id;
   }
 
   async download(fileId: string): Promise<ArrayBuffer> {
