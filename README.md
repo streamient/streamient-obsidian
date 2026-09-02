@@ -12,6 +12,7 @@ Synchronize Markdown, Canvas, Bases, documents, and attachments between one Obsi
 - Resumable encrypted attachment uploads.
 - Offline queue, revision cursors, and multiple-device idempotency.
 - Streamient Notes by default and opt-in Memories through `streamient_type: memory` frontmatter.
+- Saved URLs under each project's `URLs` folder, with URL, title, tags, and description round-tripping as Markdown.
 - Obsidian trash integration and recoverable conflict revisions.
 
 ## Installation
@@ -47,6 +48,8 @@ To test prerelease builds, install [BRAT](https://obsidian.md/plugins?id=obsidia
 7. Review transfer counts and bytes, then explicitly start the first sync.
 
 Projects synchronize sequentially. **Abort** stops after the current request or upload chunk, removes an incomplete upload, and leaves completed work intact. The project remains paused until **Resume** is selected.
+
+Saved URLs use `streamient_type: url` plus a `url` field in frontmatter. The Markdown body is the saved description. Streamient keeps extracted and crawled page text server-side, so vault edits cannot overwrite crawler output. See the [Streamient Obsidian Sync guide](https://docs.streamient.com/guide/obsidian-sync) for the complete format.
 
 ## Privacy and network disclosure
 
