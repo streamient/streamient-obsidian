@@ -11,6 +11,7 @@ test('keeps account credentials and project runtime state device-local', () => {
   assert.match(source, /const shared = \{ schemaVersion: 2, serverUrl: this\.settings\.serverUrl, profiles: this\.settings\.profiles \}/);
   assert.match(source, /const local = \{ authenticated: this\.settings\.authenticated, defaultAccountKey: this\.settings\.defaultAccountKey, accounts: this\.settings\.accounts/);
   assert.match(source, /secretName\(account: string\)/);
+  assert.match(source, /return secretStorageId\(this\.settings\.deviceId, account\)/);
   assert.match(source, /authorizedKeys = Object\.keys\(this\.settings\.accounts\)/);
   assert.match(source, /await this\.migrateLegacyCredential\(\)/);
   assert.match(source, /this\.app\.secretStorage\.setSecret\(this\.legacySecretName\(\), ''\)/);

@@ -2,7 +2,7 @@ import { App, FuzzySuggestModal, Modal, Notice, Platform, Plugin, PluginSettingT
 
 import { authorizationUrl, exchangeAuthorizationCode, refreshAccessToken, StreamientApi } from './api';
 import { base64Url, isExcludedVaultPath, normalizeServerUrl, normalizeVaultPath, pkceChallenge, uuid } from './core';
-import { accountKey, createProjectState, migrateSettings, ownerForPath, profileConfigurationError, retainOwnedOperations, uniqueProjectFolder } from './profiles';
+import { accountKey, createProjectState, migrateSettings, ownerForPath, profileConfigurationError, retainOwnedOperations, secretStorageId, uniqueProjectFolder } from './profiles';
 import { SerializedSettingsWriter } from './persistence';
 import { SyncEngine } from './sync';
 import type { ProjectSummary, ProjectSyncProfile, ScopePathKind, StreamientSyncSettings, SyncAccount, SyncProgress, SyncScopePath, VaultScopeMode } from './types';
@@ -172,7 +172,7 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   private secretName(account: string): string {
-    return `streamient-sync-${this.settings.deviceId}-${account}`;
+    return secretStorageId(this.settings.deviceId, account);
   }
 
   private legacySecretName(): string {

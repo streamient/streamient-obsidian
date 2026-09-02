@@ -216,6 +216,10 @@ export function accountKey(accountId: string, userId: string): string {
   return `${accountId}:${userId}`;
 }
 
+export function secretStorageId(deviceId: string, key: string): string {
+  return `streamient-sync-${deviceId}-${key}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+}
+
 export function retainOwnedOperations(operations: PendingOperation[], profile: ProjectSyncProfile, profiles: ProjectSyncProfile[]): PendingOperation[] {
   return operations.filter((operation) => profileOwnsPath(profile, profiles, operation.path));
 }

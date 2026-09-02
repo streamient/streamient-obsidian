@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { SerializedSettingsWriter } from '../src/persistence';
-import { accountKey, createProjectState, manifestScope, migrateSettings, ownerForPath, profileConfigurationError, retainOwnedOperations } from '../src/profiles';
+import { accountKey, createProjectState, manifestScope, migrateSettings, ownerForPath, profileConfigurationError, retainOwnedOperations, secretStorageId } from '../src/profiles';
 import type { ProjectSyncProfile } from '../src/types';
 
 function profile(overrides: Partial<ProjectSyncProfile> = {}): ProjectSyncProfile {
@@ -35,6 +35,13 @@ test('keeps account identities separate and device-local', () => {
   assert.equal(settings.defaultAccountKey, key);
   assert.equal(settings.accounts[key].userEmail, 'work@example.com');
   assert.equal(settings.profiles[0].accountKey, key);
+});
+
+test('uses only Obsidian-compatible characters for per-account secret IDs', () => {
+  const id = secretStorageId('Device_A', accountKey('tenant:work', 'user@example.com'));
+  assert.match(id, /^[a-z0-9-]+$/);
+  assert.doesNotMatch(id, /:/);
+  assert.notEqual(secretStorageId('device-1', accountKey('tenant-1', 'user-1')), secretStorageId('device-1', accountKey('tenant-2', 'user-1')));
 });
 
 test('routes managed, selected, and catch-all paths to exactly one profile', () => {
