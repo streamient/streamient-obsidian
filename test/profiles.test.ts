@@ -60,10 +60,19 @@ test('routes managed, selected, and catch-all paths to exactly one profile', () 
 test('rejects overlapping project roots, selected paths, and whole-vault owners', () => {
   const one = profile({ vaultMode: 'all' });
   assert.match(profileConfigurationError([one], profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', streamientFolder: 'Streamient/Two', vaultMode: 'all' })), /Only one project/);
-  assert.match(profileConfigurationError([one], profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', streamientFolder: 'Streamient/One/Nested' })), /folders overlap/);
+  assert.match(profileConfigurationError([one], profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', streamientFolder: 'Streamient/One' })), /already used/);
   assert.match(profileConfigurationError([one], profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', streamientFolder: 'Streamient/Two', vaultMode: 'selected', selectedPaths: [{ path: 'Streamient/One', kind: 'folder' }] })), /overlaps/);
   const selectedOwner = profile({ vaultMode: 'selected', selectedPaths: [{ path: 'Shared', kind: 'folder' }] });
-  assert.match(profileConfigurationError([selectedOwner], profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', streamientFolder: 'Shared/Project' })), /folders overlap/);
+  assert.match(profileConfigurationError([selectedOwner], profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', streamientFolder: 'Shared/Project' })), /overlaps selected content/);
+});
+
+test('carves specific project folders out of a legacy Streamient root', () => {
+  const legacy = profile({ streamientFolder: 'Streamient' });
+  const nested = profile({ id: 'profile-2', projectId: 'project-2', connectionId: 'connection-2', projectName: 'Work', streamientFolder: 'Streamient/Work' });
+  assert.equal(profileConfigurationError([legacy], nested), '');
+  assert.equal(ownerForPath([legacy, nested], 'Streamient/Legacy.md')?.id, legacy.id);
+  assert.equal(ownerForPath([legacy, nested], 'Streamient/Work/Project.md')?.id, nested.id);
+  assert.deepEqual(manifestScope(legacy, [legacy, nested]).excluded_paths, [{ path: 'Streamient/Work', kind: 'folder' }]);
 });
 
 test('drops queued work when scope is removed without creating a remote delete', () => {

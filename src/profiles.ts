@@ -173,7 +173,8 @@ export function profileConfigurationError(profiles: ProjectSyncProfile[], candid
   if (candidate.vaultMode === 'all' && others.some((profile) => profile.vaultMode === 'all')) return 'Only one project can sync the entire vault.';
   const candidateManaged = managedPath(candidate);
   for (const other of others) {
-    if (pathsOverlap(candidateManaged, managedPath(other)) || other.vaultMode === 'selected' && other.selectedPaths.some((path) => pathsOverlap(candidateManaged, path))) return `Project folders overlap with ${other.projectName}.`;
+    if (candidateManaged.path === other.streamientFolder) return `Project folder is already used by ${other.projectName}.`;
+    if (other.vaultMode === 'selected' && other.selectedPaths.some((path) => pathsOverlap(candidateManaged, path))) return `Project folder overlaps selected content from ${other.projectName}.`;
   }
   const selected = candidate.vaultMode === 'selected' ? candidate.selectedPaths : [];
   for (let index = 0; index < selected.length; index++) {

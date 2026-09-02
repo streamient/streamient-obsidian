@@ -41,4 +41,7 @@ test('adds a project profile without automatically starting synchronization', ()
   assert.match(connectBlock, /createProjectState\(\)/);
   assert.doesNotMatch(connectBlock, /fullSync/);
   assert.match(connectBlock, /Review its first sync before starting/);
+  assert.ok(connectBlock.indexOf('profileConfigurationError') < connectBlock.indexOf('this.api(key).connect'));
+  assert.match(connectBlock, /if \(this\.activeEngine\(\)\)/);
+  assert.match(source, /setButtonText\('Add project'\).*this\.plugin\.isSyncActive\(\)/);
 });

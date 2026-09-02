@@ -263,6 +263,10 @@ export default class StreamientSyncPlugin extends Plugin {
     return [...this.engines.values()].find((engine) => engine.busy()) || null;
   }
 
+  isSyncActive(): boolean {
+    return Boolean(this.activeEngine());
+  }
+
   private refreshStatus(): void {
     if (!this.statusBar) return;
     if (!this.settings.authenticated) {
@@ -319,6 +323,10 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   async startAuthorization(mode: 'default' | 'additional' | 'profile' = 'default', profileId = ''): Promise<void> {
+    if (this.activeEngine()) {
+      new Notice('Wait for the active sync to finish or abort it first');
+      return;
+    }
     try {
       this.settings.serverUrl = normalizeServerUrl(this.settings.serverUrl);
       const verifier = base64Url(crypto.getRandomValues(new Uint8Array(48)).buffer);
@@ -377,6 +385,10 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   async chooseProject(selectedAccountKey = ''): Promise<void> {
+    if (this.activeEngine()) {
+      new Notice('Wait for the active sync to finish or abort it first');
+      return;
+    }
     if (!this.settings.authenticated) {
       new Notice('Sign in to Streamient first');
       return;
@@ -403,10 +415,18 @@ export default class StreamientSyncPlugin extends Plugin {
 
   private async connectProject(project: ProjectSummary, key: string): Promise<void> {
     if (this.settings.profiles.some((profile) => profile.accountKey === key && profile.projectId === project._id)) return;
+    if (this.activeEngine()) {
+      new Notice('Wait for the active sync to finish or abort it first');
+      return;
+    }
     try {
-      const connection = await this.api(key).connect({ project_id: project._id, name: this.app.vault.getName(), streamient_folder: uniqueProjectFolder(project.name, this.settings.profiles), device_id: this.settings.deviceId, device_name: this.settings.deviceName, platform: Platform.isMobile ? 'mobile' : 'desktop' });
+      const profile: ProjectSyncProfile = { id: uuid(), accountKey: key, projectId: project._id, projectName: project.name, connectionId: `pending-${project._id}`, streamientFolder: uniqueProjectFolder(project.name, this.settings.profiles), vaultMode: 'off', selectedPaths: [] };
+      const configurationError = profileConfigurationError(this.settings.profiles, profile);
+      if (configurationError) throw new Error(configurationError);
+      const connection = await this.api(key).connect({ project_id: project._id, name: this.app.vault.getName(), streamient_folder: profile.streamientFolder, device_id: this.settings.deviceId, device_name: this.settings.deviceName, platform: Platform.isMobile ? 'mobile' : 'desktop' });
       if (!connection.enabled) await this.api(key).updateConnection(connection.id, { enabled: true });
-      const profile: ProjectSyncProfile = { id: uuid(), accountKey: key, projectId: project._id, projectName: project.name, connectionId: connection.id, streamientFolder: connection.streamient_folder, vaultMode: 'off', selectedPaths: [] };
+      profile.connectionId = connection.id;
+      profile.streamientFolder = connection.streamient_folder;
       const error = profileConfigurationError(this.settings.profiles, profile);
       if (error) throw new Error(error);
       this.settings.profiles.push(profile);
@@ -604,6 +624,10 @@ export default class StreamientSyncPlugin extends Plugin {
   }
 
   removeProject(profileId: string): void {
+    if (this.activeEngine()) {
+      new Notice('Wait for the active sync to finish or abort it first');
+      return;
+    }
     const profile = this.settings.profiles.find((item) => item.id === profileId);
     if (!profile) return;
     new ConfirmModal(this.app, `Remove ${profile.projectName}?`, 'Synchronization stops in this vault. Local files and Streamient content are retained.', (confirmed) => {
@@ -678,7 +702,7 @@ class StreamientSettingTab extends PluginSettingTab {
         {
           name: 'Account',
           desc: account ? `${account.accountName} — ${account.userEmail || account.userName}` : 'Sign in to this account on this device',
-          render: (setting) => setting.addButton((button) => button.setButtonText(account ? 'Reconnect' : 'Sign in').onClick(() => this.plugin.reconnectProfileAccount(profile.id))),
+          render: (setting) => setting.addButton((button) => button.setButtonText(account ? 'Reconnect' : 'Sign in').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.reconnectProfileAccount(profile.id))),
         },
         { name: 'Project folder', desc: 'Streamient project content always synchronizes both ways here.', control: { type: 'text', key: `folder:${profile.id}`, validate: (value) => {
           try {
@@ -686,8 +710,8 @@ class StreamientSettingTab extends PluginSettingTab {
           } catch (error) {
             return error instanceof Error ? error.message : String(error);
           }
-        } } },
-        { name: 'Extra vault content', desc: 'Optionally synchronize content outside the managed project folder.', control: { type: 'dropdown', key: `mode:${profile.id}`, options: { off: 'Off', selected: 'Selected folders and files', all: 'Entire unassigned vault' } } },
+        }, disabled: () => this.plugin.isSyncActive() } },
+        { name: 'Extra vault content', desc: 'Optionally synchronize content outside the managed project folder.', control: { type: 'dropdown', key: `mode:${profile.id}`, options: { off: 'Off', selected: 'Selected folders and files', all: 'Entire unassigned vault' }, disabled: () => this.plugin.isSyncActive() } },
         {
           name: 'Selected content',
           desc: profile.selectedPaths.length ? `${profile.selectedPaths.length} selected` : 'No additional vault content selected',
@@ -699,8 +723,8 @@ class StreamientSettingTab extends PluginSettingTab {
               row.createSpan({ text: `${path.kind}: ${path.path}` });
               row.createEl('button', { text: 'Remove', cls: 'mod-muted' }).addEventListener('click', () => void this.plugin.removeScopePath(profile.id, path));
             }
-            setting.addButton((button) => button.setButtonText('Add folder').onClick(() => this.plugin.chooseScopePath(profile.id, 'folder')));
-            setting.addButton((button) => button.setButtonText('Add file').onClick(() => this.plugin.chooseScopePath(profile.id, 'file')));
+            setting.addButton((button) => button.setButtonText('Add folder').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.chooseScopePath(profile.id, 'folder')));
+            setting.addButton((button) => button.setButtonText('Add file').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.chooseScopePath(profile.id, 'file')));
           },
         },
         {
@@ -712,7 +736,7 @@ class StreamientSettingTab extends PluginSettingTab {
             const progress = this.plugin.progressFor(profile.id);
             if (progress?.active) setting.addButton((button) => button.setButtonText('Abort').setDestructive().onClick(() => void this.plugin.abortProject(profile.id)));
             else setting.addButton((button) => button.setButtonText(state.needsReview ? 'Review' : state.paused ? 'Resume' : 'Sync').setCta().onClick(() => void this.plugin.syncProject(profile.id)));
-            setting.addButton((button) => button.setButtonText('Remove').onClick(() => this.plugin.removeProject(profile.id)));
+            setting.addButton((button) => button.setButtonText('Remove').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.removeProject(profile.id)));
           },
         },
       ],
@@ -730,8 +754,8 @@ class StreamientSettingTab extends PluginSettingTab {
             name: 'Default account',
             desc: this.plugin.settings.defaultAccountKey && this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey] ? `${this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey].accountName} — ${this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey].userEmail || this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey].userName}` : 'Not signed in',
             render: (setting) => {
-              setting.addButton((button) => button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization()));
-              setting.addButton((button) => button.setButtonText('Add account').setDisabled(!this.plugin.settings.authenticated).onClick(() => this.plugin.addAccount()));
+              setting.addButton((button) => button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().setDisabled(this.plugin.isSyncActive()).onClick(() => void this.plugin.startAuthorization()));
+              setting.addButton((button) => button.setButtonText('Add account').setDisabled(!this.plugin.settings.authenticated || this.plugin.isSyncActive()).onClick(() => this.plugin.addAccount()));
               setting.addButton((button) => button.setButtonText('Sign out').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.disconnect()));
             },
           },
@@ -746,8 +770,8 @@ class StreamientSettingTab extends PluginSettingTab {
             name: 'Project sync profiles',
             desc: this.plugin.settings.profiles.length ? `${this.plugin.settings.profiles.length} configured` : 'No projects configured',
             render: (setting) => {
-              setting.addButton((button) => button.setButtonText('Add project').setCta().setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.chooseProject()));
-              setting.addButton((button) => button.setButtonText('Sync all').setDisabled(!this.plugin.settings.authenticated || !this.plugin.settings.profiles.length).onClick(() => void this.plugin.syncAll()));
+              setting.addButton((button) => button.setButtonText('Add project').setCta().setDisabled(!this.plugin.settings.authenticated || this.plugin.isSyncActive()).onClick(() => void this.plugin.chooseProject()));
+              setting.addButton((button) => button.setButtonText('Sync all').setDisabled(!this.plugin.settings.authenticated || !this.plugin.settings.profiles.length || this.plugin.isSyncActive()).onClick(() => void this.plugin.syncAll()));
             },
           },
         ],
