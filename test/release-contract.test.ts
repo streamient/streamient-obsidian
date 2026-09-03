@@ -16,8 +16,8 @@ test('attests every published Obsidian release asset', () => {
   assert.ok(workflow.indexOf('Attest release assets') < workflow.indexOf('Create release'));
 });
 
-test('keeps the 0.3.0 release metadata aligned', () => {
-  assert.equal(manifest.version, '0.3.0');
+test('keeps the 0.3.1 release metadata aligned', () => {
+  assert.equal(manifest.version, '0.3.1');
   assert.equal(packageJson.version, manifest.version);
   assert.equal(versions[manifest.version], manifest.minAppVersion);
 });

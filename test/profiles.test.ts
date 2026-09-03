@@ -17,6 +17,7 @@ test('migrates legacy settings paused without retaining the bulk operation queue
   assert.equal(settings.profiles[0].accountKey, '');
   assert.equal(settings.profileStates[settings.profiles[0].id].paused, true);
   assert.equal(settings.profileStates[settings.profiles[0].id].needsReview, true);
+  assert.equal(settings.profileStates[settings.profiles[0].id].folderRelocationTarget, '');
   assert.deepEqual(settings.profileStates[settings.profiles[0].id].pendingOperations, []);
   assert.ok(settings.profileStates[settings.profiles[0].id].fileStates['Known.md']);
 });

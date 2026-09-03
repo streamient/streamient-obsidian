@@ -71,7 +71,7 @@ function normalizeAccounts(value: unknown): Record<string, SyncAccount> {
 }
 
 export function createProjectState(overrides: Partial<ProjectSyncState> = {}): ProjectSyncState {
-  return { cursor: 0, lastSyncAt: 0, lastSyncError: '', lastSyncRequestAt: 0, fileStates: {}, pendingOperations: [], paused: false, needsReview: true, ...overrides };
+  return { cursor: 0, lastSyncAt: 0, lastSyncError: '', lastSyncRequestAt: 0, fileStates: {}, pendingOperations: [], paused: false, needsReview: true, folderRelocationTarget: '', ...overrides };
 }
 
 function normalizeState(value: unknown): ProjectSyncState {
@@ -85,6 +85,7 @@ function normalizeState(value: unknown): ProjectSyncState {
     pendingOperations: Array.isArray(source.pendingOperations) ? source.pendingOperations as PendingOperation[] : [],
     paused: source.paused === true,
     needsReview: source.needsReview !== false,
+    folderRelocationTarget: stringValue(source.folderRelocationTarget),
   });
 }
 

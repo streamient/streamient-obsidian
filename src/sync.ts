@@ -1,9 +1,9 @@
-import { App, Modal, Notice, Platform, Setting, TFile, normalizePath } from 'obsidian';
+import { App, Modal, Notice, Platform, Setting, TFile, TFolder, normalizePath } from 'obsidian';
 
 import { StreamientApi, StreamientRequestCancelledError } from './api';
 import { coalescePending, isExcludedVaultPath, mimeTypeForPath, normalizeVaultPath, sha256Hex, uuid, vaultFileKind } from './core';
 import { manifestScope, profileOwnsPath } from './profiles';
-import type { FileState, ManifestEntry, ManifestSummary, PendingOperation, ProjectSyncProfile, ProjectSyncState, StreamientSyncSettings, SyncAction, SyncChange, SyncPhase, SyncProgress } from './types';
+import type { ConnectionSummary, FileState, ManifestEntry, ManifestSummary, PendingOperation, ProjectSyncProfile, ProjectSyncState, StreamientSyncSettings, SyncAction, SyncChange, SyncPhase, SyncProgress } from './types';
 
 interface SyncEngineOptions {
   app: App;
@@ -255,20 +255,19 @@ export class SyncEngine {
       this.report('reconciling', true, 0, 0, '', '', true);
       const result = await this.getApi().manifest(this.profile.connectionId, localManifest, scope, this.devicePayload(), false, false, signal);
       this.throwIfCanceled(signal);
-      const order: Record<SyncAction['action'], number> = { download: 0, trash: 1, noop: 2, upload: 3, ignore: 4 };
-      const actions = [...result.actions].sort((left, right) => order[left.action] - order[right.action]);
-      this.report('applying', true, 0, actions.length, '', '', true);
-      for (let index = 0; index < actions.length; index++) {
-        this.throwIfCanceled(signal);
-        const action = actions[index];
-        this.report('applying', true, index, actions.length, action.path);
-        await this.applyManifestAction(action, signal);
-        this.report('applying', true, index + 1, actions.length, action.path);
-        await this.checkpoint();
-        if ((index + 1) % 25 === 0) await new Promise((resolve) => window.setTimeout(resolve, 0));
-      }
+      await this.applyManifestActions(result.actions, signal);
       await this.flushOperations(signal);
       this.state.cursor = Math.max(this.state.cursor, result.cursor || 0);
+      let exportsPending = Boolean(result.exports_pending);
+      while (exportsPending) {
+        this.throwIfCanceled(signal);
+        this.report('reconciling', true, 0, 0, '', '', true);
+        const exported = await this.getApi().projectExports(this.profile.connectionId, this.devicePayload());
+        await this.applyManifestActions(exported.actions, signal);
+        this.state.cursor = Math.max(this.state.cursor, exported.cursor || 0);
+        exportsPending = exported.has_more;
+        await this.checkpoint(true);
+      }
       this.state.lastSyncRequestAt = result.connection.sync_requested_at ? new Date(result.connection.sync_requested_at).getTime() : this.state.lastSyncRequestAt;
       await this.recordSuccess();
       this.report('complete', false, 0, 0, '', '', true);
@@ -282,6 +281,21 @@ export class SyncEngine {
     } finally {
       this.running = false;
       this.controller = null;
+    }
+  }
+
+  private async applyManifestActions(values: SyncAction[], signal: AbortSignal): Promise<void> {
+    const order: Record<SyncAction['action'], number> = { download: 0, trash: 1, noop: 2, upload: 3, ignore: 4 };
+    const actions = [...values].sort((left, right) => order[left.action] - order[right.action]);
+    this.report('applying', true, 0, actions.length, '', '', true);
+    for (let index = 0; index < actions.length; index++) {
+      this.throwIfCanceled(signal);
+      const action = actions[index];
+      this.report('applying', true, index, actions.length, action.path);
+      await this.applyManifestAction(action, signal);
+      this.report('applying', true, index + 1, actions.length, action.path);
+      await this.checkpoint();
+      if ((index + 1) % 25 === 0) await new Promise((resolve) => window.setTimeout(resolve, 0));
     }
   }
 
@@ -498,6 +512,57 @@ export class SyncEngine {
       this.controller = null;
     }
     if (runFullSync && !this.state.paused) await this.fullSync();
+  }
+
+  async relocateFolder(streamientFolder: string): Promise<ConnectionSummary> {
+    if (!this.connected() || this.running) throw new Error('Project synchronization is already running');
+    this.running = true;
+    this.controller = new AbortController();
+    const signal = this.controller.signal;
+    let updated: ConnectionSummary | null = null;
+    let moved = 0;
+    let hasMore = true;
+    const emptyFolderCandidates = new Set<string>();
+    try {
+      while (hasMore) {
+        this.throwIfCanceled(signal);
+        const result = await this.getApi().relocateFolder(this.profile.connectionId, streamientFolder, this.devicePayload());
+        updated = result.connection;
+        const total = moved + result.changes.length + result.remaining;
+        this.report('renaming', true, moved, total, '', '', true);
+        for (const change of result.changes) {
+          if (change.previous_path) {
+            let folder = change.previous_path.split('/').slice(0, -1).join('/');
+            while (folder && folder !== this.profile.streamientFolder) {
+              emptyFolderCandidates.add(folder);
+              folder = folder.split('/').slice(0, -1).join('/');
+            }
+          }
+          await this.applyContent(change);
+          moved++;
+          this.report('renaming', true, moved, total, change.path);
+          await this.checkpoint();
+        }
+        this.state.cursor = Math.max(this.state.cursor, result.connection.sequence || 0);
+        hasMore = result.has_more;
+        await this.checkpoint(true);
+      }
+      if (!updated) throw new Error('Project folder relocation returned no connection');
+      for (const folderPath of [...emptyFolderCandidates].sort((left, right) => right.split('/').length - left.split('/').length)) {
+        const folder = this.app.vault.getAbstractFileByPath(folderPath);
+        if (folder instanceof TFolder && !folder.children.length) await this.app.fileManager.trashFile(folder);
+      }
+      await this.recordSuccess();
+      this.report('complete', false, moved, moved, '', '', true);
+      return updated;
+    } catch (error) {
+      if (isCanceled(error)) await this.recordCanceled();
+      else await this.recordFailure(error);
+      throw error;
+    } finally {
+      this.running = false;
+      this.controller = null;
+    }
   }
 
   async abort(): Promise<void> {

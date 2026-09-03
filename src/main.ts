@@ -76,7 +76,7 @@ class VaultPathPicker extends FuzzySuggestModal<TAbstractFile> {
 class ConfirmModal extends Modal {
   private settled = false;
 
-  constructor(app: App, private readonly title: string, private readonly message: string, private readonly done: (confirmed: boolean) => void) {
+  constructor(app: App, private readonly title: string, private readonly message: string, private readonly done: (confirmed: boolean) => void, private readonly confirmLabel = 'Remove', private readonly destructive = true) {
     super(app);
   }
 
@@ -92,7 +92,12 @@ class ConfirmModal extends Modal {
     this.contentEl.createEl('p', { text: this.message });
     new Setting(this.contentEl)
       .addButton((button) => button.setButtonText('Cancel').onClick(() => this.finish(false)))
-      .addButton((button) => button.setButtonText('Remove').setDestructive().onClick(() => this.finish(true)));
+      .addButton((button) => {
+        button.setButtonText(this.confirmLabel);
+        if (this.destructive) button.setDestructive();
+        else button.setCta();
+        button.onClick(() => this.finish(true));
+      });
   }
 
   onClose(): void {
@@ -510,6 +515,10 @@ export default class StreamientSyncPlugin extends Plugin {
     this.coordinating = true;
     try {
       if (state.paused) await engine.resume();
+      if (state.folderRelocationTarget) {
+        await this.finishProfileFolderRelocation(profileId);
+        return;
+      }
       await engine.fullSync(state.needsReview);
     } catch (error) {
       new Notice(`Streamient sync failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -558,14 +567,10 @@ export default class StreamientSyncPlugin extends Plugin {
     return profile ? { ...profile, ...changes } : null;
   }
 
-  private async saveProfile(candidate: ProjectSyncProfile, updateConnection = false): Promise<void> {
+  private async saveProfile(candidate: ProjectSyncProfile): Promise<void> {
     if (this.activeEngine()) throw new Error('Wait for the active sync to finish or abort it first.');
     const error = profileConfigurationError(this.settings.profiles, candidate);
     if (error) throw new Error(error);
-    if (updateConnection) {
-      const connection = await this.api(candidate.accountKey).updateConnection(candidate.connectionId, { streamient_folder: candidate.streamientFolder });
-      candidate.streamientFolder = connection.streamient_folder;
-    }
     const index = this.settings.profiles.findIndex((profile) => profile.id === candidate.id);
     this.settings.profiles[index] = candidate;
     const state = this.settings.profileStates[candidate.id];
@@ -581,11 +586,57 @@ export default class StreamientSyncPlugin extends Plugin {
       const streamientFolder = normalizeVaultPath(value);
       if (isExcludedVaultPath(streamientFolder)) throw new Error('Project folder cannot be hidden or excluded.');
       const candidate = this.profileWith(profileId, { streamientFolder });
-      if (candidate) await this.saveProfile(candidate, true);
+      if (!candidate || candidate.streamientFolder === this.settings.profiles.find((profile) => profile.id === profileId)?.streamientFolder) return;
+      const error = profileConfigurationError(this.settings.profiles, candidate);
+      if (error) throw new Error(error);
+      new ConfirmModal(this.app, `Move ${candidate.projectName}?`, `Move synchronized files to ${streamientFolder}. The move runs in resumable batches and keeps file history.`, (confirmed) => {
+        if (!confirmed) {
+          this.refreshSettingsTab();
+          return;
+        }
+        void this.startProfileFolderRelocation(profileId, streamientFolder);
+      }, 'Move', false).open();
     } catch (error) {
       new Notice(`Could not update project folder: ${error instanceof Error ? error.message : String(error)}`);
       this.refreshSettingsTab();
     }
+  }
+
+  private async startProfileFolderRelocation(profileId: string, streamientFolder: string): Promise<void> {
+    if (this.coordinating || this.activeEngine()) {
+      new Notice('Wait for the active sync to finish or abort it first');
+      return;
+    }
+    const state = this.settings.profileStates[profileId];
+    if (!state) return;
+    state.folderRelocationTarget = streamientFolder;
+    state.paused = false;
+    await this.saveSettings();
+    this.coordinating = true;
+    try {
+      await this.finishProfileFolderRelocation(profileId);
+    } catch (error) {
+      new Notice(`Could not move project folder: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.coordinating = false;
+      this.refreshSettingsTab();
+    }
+  }
+
+  private async finishProfileFolderRelocation(profileId: string): Promise<void> {
+    const profile = this.settings.profiles.find((item) => item.id === profileId);
+    const state = this.settings.profileStates[profileId];
+    const engine = this.engines.get(profileId);
+    if (!profile || !state?.folderRelocationTarget || !engine) return;
+    const connection = await engine.relocateFolder(state.folderRelocationTarget);
+    profile.streamientFolder = connection.streamient_folder;
+    state.folderRelocationTarget = '';
+    state.paused = false;
+    state.needsReview = true;
+    state.pendingOperations = retainOwnedOperations(state.pendingOperations, profile, this.settings.profiles);
+    await this.saveSettings();
+    this.rebuildEngines();
+    new Notice(`${profile.projectName} moved to ${profile.streamientFolder}. Review before syncing again.`);
   }
 
   async updateVaultMode(profileId: string, vaultMode: VaultScopeMode): Promise<void> {
@@ -687,7 +738,6 @@ class StreamientSettingTab extends PluginSettingTab {
     }
     const [field, profileId] = key.split(':');
     if (!profileId || typeof value !== 'string') return;
-    if (field === 'folder') await this.plugin.updateProfileFolder(profileId, value);
     if (field === 'mode' && ['off', 'selected', 'all'].includes(value)) await this.plugin.updateVaultMode(profileId, value as VaultScopeMode);
   }
 
@@ -704,13 +754,15 @@ class StreamientSettingTab extends PluginSettingTab {
           desc: account ? `${account.accountName} — ${account.userEmail || account.userName}` : 'Sign in to this account on this device',
           render: (setting) => setting.addButton((button) => button.setButtonText(account ? 'Reconnect' : 'Sign in').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.reconnectProfileAccount(profile.id))),
         },
-        { name: 'Project folder', desc: 'Streamient project content always synchronizes both ways here.', control: { type: 'text', key: `folder:${profile.id}`, validate: (value) => {
-          try {
-            return isExcludedVaultPath(normalizeVaultPath(value)) ? 'Choose a visible vault folder.' : undefined;
-          } catch (error) {
-            return error instanceof Error ? error.message : String(error);
-          }
-        }, disabled: () => this.plugin.isSyncActive() } },
+        {
+          name: 'Project folder',
+          desc: 'Streamient project content always synchronizes both ways here.',
+          render: (setting) => {
+            let value = profile.streamientFolder;
+            setting.addText((text) => text.setValue(value).setDisabled(this.plugin.isSyncActive()).onChange((next) => { value = next; }));
+            setting.addButton((button) => button.setButtonText('Move').setDisabled(this.plugin.isSyncActive()).onClick(() => void this.plugin.updateProfileFolder(profile.id, value)));
+          },
+        },
         { name: 'Extra vault content', desc: 'Optionally synchronize content outside the managed project folder.', control: { type: 'dropdown', key: `mode:${profile.id}`, options: { off: 'Off', selected: 'Selected folders and files', all: 'Entire unassigned vault' }, disabled: () => this.plugin.isSyncActive() } },
         {
           name: 'Selected content',
@@ -735,7 +787,7 @@ class StreamientSettingTab extends PluginSettingTab {
             this.updateSyncStatus(profile.id);
             const progress = this.plugin.progressFor(profile.id);
             if (progress?.active) setting.addButton((button) => button.setButtonText('Abort').setDestructive().onClick(() => void this.plugin.abortProject(profile.id)));
-            else setting.addButton((button) => button.setButtonText(state.needsReview ? 'Review' : state.paused ? 'Resume' : 'Sync').setCta().onClick(() => void this.plugin.syncProject(profile.id)));
+            else setting.addButton((button) => button.setButtonText(state.folderRelocationTarget ? 'Resume move' : state.needsReview ? 'Review' : state.paused ? 'Resume' : 'Sync').setCta().onClick(() => void this.plugin.syncProject(profile.id)));
             setting.addButton((button) => button.setButtonText('Remove').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.removeProject(profile.id)));
           },
         },

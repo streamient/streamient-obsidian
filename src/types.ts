@@ -43,6 +43,7 @@ export interface ProjectSyncState {
   pendingOperations: PendingOperation[];
   paused: boolean;
   needsReview: boolean;
+  folderRelocationTarget: string;
 }
 
 export interface StreamientSyncSettings {
@@ -106,6 +107,7 @@ export interface ConnectionSummary {
   enabled: boolean;
   sequence: number;
   sync_requested_at?: string | null;
+  folder_relocation?: { from: string; to: string; started_at?: string | null } | null;
 }
 
 export interface ManifestEntry {
@@ -136,6 +138,22 @@ export interface ManifestResult {
   summary: ManifestSummary;
   cursor: number;
   connection: ConnectionSummary;
+  exports_pending?: boolean;
+}
+
+export interface ProjectExportResult {
+  actions: SyncAction[];
+  summary: ManifestSummary;
+  cursor: number;
+  has_more: boolean;
+}
+
+export interface FolderRelocationResult {
+  connection: ConnectionSummary;
+  changes: SyncChange[];
+  moved: number;
+  remaining: number;
+  has_more: boolean;
 }
 
 export interface SyncAction {

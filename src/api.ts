@@ -2,7 +2,7 @@ import { requestUrl } from 'obsidian';
 import type { RequestUrlParam, RequestUrlResponse } from 'obsidian';
 
 import { manifestBatches, normalizeServerUrl, sha256Hex, UPLOAD_CHUNK_SIZE, uuid } from './core';
-import type { AccountSummary, ConnectionSummary, ManifestEntry, ManifestResult, ManifestScope, MutationResult, ProjectSummary, SyncChange } from './types';
+import type { AccountSummary, ConnectionSummary, FolderRelocationResult, ManifestEntry, ManifestResult, ManifestScope, MutationResult, ProjectExportResult, ProjectSummary, SyncChange } from './types';
 
 const CLIENT_ID = 'streamient-obsidian';
 const REDIRECT_URI = 'obsidian://streamient-auth';
@@ -39,9 +39,16 @@ function jsonBody(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function responseError(response: { status: number; json?: unknown; text?: string }): StreamientApiError {
-  const payload = response.json && typeof response.json === 'object' ? response.json as { error?: string; code?: string } : {};
-  return new StreamientApiError(payload.error || response.text || `Streamient request failed (${response.status})`, response.status, payload.code || '');
+function responseError(response: { status: number; text?: string }): StreamientApiError {
+  const text = String(response.text || '').trim();
+  let payload: { error?: string; code?: string } = {};
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === 'object') payload = parsed;
+  } catch {
+    // Reverse proxies may return plain text or HTML.
+  }
+  return new StreamientApiError(payload.error || text || `Streamient request failed (${response.status})`, response.status, payload.code || '');
 }
 
 export function authorizationUrl(serverUrl: string, state: string, challenge: string, forceLogin = false): string {
@@ -149,6 +156,14 @@ export class StreamientApi {
     }
     if (signal?.aborted) throw new StreamientRequestCancelledError();
     return this.request('POST', `/connections/${connectionId}/manifest`, { manifest_id: manifestId, batch_count: batches.length, complete: true, preview, summary_only: summaryOnly, scope, ...device });
+  }
+
+  async projectExports(connectionId: string, device: Record<string, unknown>): Promise<ProjectExportResult> {
+    return this.request('POST', `/connections/${connectionId}/exports`, device);
+  }
+
+  async relocateFolder(connectionId: string, streamientFolder: string, device: Record<string, unknown>): Promise<FolderRelocationResult> {
+    return this.request('POST', `/connections/${connectionId}/relocate`, { streamient_folder: streamientFolder, ...device });
   }
 
   async mutations(connectionId: string, mutations: Record<string, unknown>[], device: Record<string, unknown>): Promise<{ results: MutationResult[]; cursor: number }> {

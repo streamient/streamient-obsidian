@@ -47,3 +47,27 @@ test('labels trash and rename mutations without calling them uploads', () => {
   assert.match(main, /trashing: 'Moving items to trash'/);
   assert.match(main, /renaming: 'Renaming items'/);
 });
+
+test('continues bounded server export batches without rescanning the vault', () => {
+  assert.match(types, /exports_pending\?: boolean/);
+  assert.match(api, /\/connections\/\$\{connectionId\}\/exports/);
+  assert.match(sync, /while \(exportsPending\)/);
+  assert.match(sync, /projectExports\(this\.profile\.connectionId/);
+  assert.match(sync, /applyManifestActions\(exported\.actions/);
+});
+
+test('keeps folder relocation resumable and cleans only empty source folders', () => {
+  assert.match(types, /folderRelocationTarget: string/);
+  assert.match(api, /\/connections\/\$\{connectionId\}\/relocate/);
+  assert.match(sync, /async relocateFolder\(streamientFolder: string\)/);
+  assert.match(sync, /folder instanceof TFolder && !folder\.children\.length/);
+  assert.match(main, /state\.folderRelocationTarget = streamientFolder/);
+  assert.match(main, /setButtonText\('Move'\).*updateProfileFolder/);
+  assert.match(main, /Review before syncing again/);
+});
+
+test('parses proxy errors from response text without assuming JSON', () => {
+  const errorBlock = api.slice(api.indexOf('function responseError'), api.indexOf('export function authorizationUrl'));
+  assert.match(errorBlock, /JSON\.parse\(text\) as unknown/);
+  assert.doesNotMatch(errorBlock, /response\.json/);
+});
