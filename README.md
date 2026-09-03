@@ -49,7 +49,7 @@ To test prerelease builds, install [BRAT](https://obsidian.md/plugins?id=obsidia
 
 Projects synchronize sequentially. **Abort** stops after the current request or upload chunk, removes an incomplete upload, and leaves completed work intact. The project remains paused until **Resume** is selected.
 
-Large server-side exports continue in bounded batches, avoiding long proxy-bound requests. Use the **Move** button beside a project folder to relocate existing synchronized files in resumable batches; the plugin preserves history, removes only empty source folders, and requires review afterward.
+Large server-side exports continue in bounded batches, avoiding long proxy-bound requests. Use the **Move** button beside a project folder to relocate existing synchronized files in resumable batches; the destination stays visible during progress, the plugin preserves history, removes only empty source folders, and requires review afterward. Sync progress updates only the affected status and controls, so it does not reset settings currently being edited.
 
 Saved URLs use `streamient_type: url` plus a `url` field in frontmatter. The Markdown body is the saved description. Streamient keeps extracted and crawled page text server-side, so vault edits cannot overwrite crawler output. See the [Streamient Obsidian Sync guide](https://docs.streamient.com/guide/obsidian-sync) for the complete format.
 

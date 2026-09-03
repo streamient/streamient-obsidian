@@ -22,8 +22,22 @@ test('updates progress incrementally and exposes per-project abort controls', ()
   assert.match(main, /createEl\('progress', \{ cls: 'streamient-sync-progress' \}\)/);
   assert.match(main, /setButtonText\('Abort'\)\.setDestructive\(\)/);
   assert.match(main, /this\.settingTab\?\.updateSyncStatus\(progress\.profileId\)/);
+  assert.match(main, /this\.settingTab\?\.updateSyncControls\(\)/);
   assert.match(styles, /\.streamient-sync-progress/);
   assert.match(styles, /\.streamient-sync-path/);
+});
+
+test('never rebuilds the settings page for automatic or manual sync progress', () => {
+  const progressBlock = main.slice(main.indexOf('private updateSyncProgress'), main.indexOf('progressFor('));
+  const backgroundBlock = main.slice(main.indexOf('private async resumeSync'), main.indexOf('async syncProject'));
+  const projectBlock = main.slice(main.indexOf('async syncProject'), main.indexOf('async syncAll'));
+  const allBlock = main.slice(main.indexOf('async syncAll'), main.indexOf('async abortProject'));
+  const abortBlock = main.slice(main.indexOf('async abortProject'), main.indexOf('private async abortActiveSync'));
+  for (const block of [progressBlock, backgroundBlock, projectBlock, allBlock, abortBlock]) assert.doesNotMatch(block, /refreshSettingsTab|\.refresh\(\)/);
+  assert.match(main, /updateProject\(profileId\)/);
+  assert.match(main, /setting\.controlEl\.empty\(\)/);
+  const projectUiBlock = main.slice(main.indexOf('updateProject(profileId: string)'), main.indexOf('getControlValue'));
+  assert.doesNotMatch(projectUiBlock, /updateProjectFolder/);
 });
 
 test('aborts cooperatively, cancels partial uploads, and waits for manual resume', () => {
@@ -62,6 +76,8 @@ test('keeps folder relocation resumable and cleans only empty source folders', (
   assert.match(sync, /async relocateFolder\(streamientFolder: string\)/);
   assert.match(sync, /folder instanceof TFolder && !folder\.children\.length/);
   assert.match(main, /state\.folderRelocationTarget = streamientFolder/);
+  assert.match(main, /state\.folderRelocationTarget \|\| profile\.streamientFolder/);
+  assert.match(main, /updateProjectFolder\(profileId\)/);
   assert.match(main, /setButtonText\('Move'\).*updateProfileFolder/);
   assert.match(main, /Review before syncing again/);
 });

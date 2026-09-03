@@ -256,8 +256,8 @@ export default class StreamientSyncPlugin extends Plugin {
     const previous = this.progress.get(progress.profileId);
     this.progress.set(progress.profileId, progress);
     this.refreshStatus();
-    if (previous?.active !== progress.active || previous?.phase === 'stopping' !== (progress.phase === 'stopping')) this.refreshSettingsTab();
-    else this.settingTab?.updateSyncStatus(progress.profileId);
+    this.settingTab?.updateSyncStatus(progress.profileId);
+    if (previous?.active !== progress.active || previous?.phase === 'stopping' !== (progress.phase === 'stopping')) this.settingTab?.updateSyncControls();
   }
 
   progressFor(profileId: string): SyncProgress | null {
@@ -495,7 +495,7 @@ export default class StreamientSyncPlugin extends Plugin {
       console.warn('Streamient background sync deferred', error);
     } finally {
       this.coordinating = false;
-      this.refreshSettingsTab();
+      this.settingTab?.updateSyncControls();
     }
   }
 
@@ -524,7 +524,7 @@ export default class StreamientSyncPlugin extends Plugin {
       new Notice(`Streamient sync failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.coordinating = false;
-      this.refreshSettingsTab();
+      this.settingTab?.updateProject(profileId);
     }
   }
 
@@ -547,13 +547,13 @@ export default class StreamientSyncPlugin extends Plugin {
       new Notice(`Streamient sync failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.coordinating = false;
-      this.refreshSettingsTab();
+      this.settingTab?.updateSyncControls();
     }
   }
 
   async abortProject(profileId: string): Promise<void> {
     await this.engines.get(profileId)?.abort();
-    this.refreshSettingsTab();
+    this.settingTab?.updateProject(profileId);
   }
 
   private async abortActiveSync(): Promise<void> {
@@ -591,20 +591,21 @@ export default class StreamientSyncPlugin extends Plugin {
       if (error) throw new Error(error);
       new ConfirmModal(this.app, `Move ${candidate.projectName}?`, `Move synchronized files to ${streamientFolder}. The move runs in resumable batches and keeps file history.`, (confirmed) => {
         if (!confirmed) {
-          this.refreshSettingsTab();
+          this.settingTab?.updateProjectFolder(profileId);
           return;
         }
         void this.startProfileFolderRelocation(profileId, streamientFolder);
       }, 'Move', false).open();
     } catch (error) {
       new Notice(`Could not update project folder: ${error instanceof Error ? error.message : String(error)}`);
-      this.refreshSettingsTab();
+      this.settingTab?.updateProjectFolder(profileId);
     }
   }
 
   private async startProfileFolderRelocation(profileId: string, streamientFolder: string): Promise<void> {
     if (this.coordinating || this.activeEngine()) {
       new Notice('Wait for the active sync to finish or abort it first');
+      this.settingTab?.updateProjectFolder(profileId);
       return;
     }
     const state = this.settings.profileStates[profileId];
@@ -612,6 +613,7 @@ export default class StreamientSyncPlugin extends Plugin {
     state.folderRelocationTarget = streamientFolder;
     state.paused = false;
     await this.saveSettings();
+    this.settingTab?.updateProjectFolder(profileId);
     this.coordinating = true;
     try {
       await this.finishProfileFolderRelocation(profileId);
@@ -619,7 +621,7 @@ export default class StreamientSyncPlugin extends Plugin {
       new Notice(`Could not move project folder: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       this.coordinating = false;
-      this.refreshSettingsTab();
+      this.settingTab?.updateProject(profileId);
     }
   }
 
@@ -636,6 +638,7 @@ export default class StreamientSyncPlugin extends Plugin {
     state.pendingOperations = retainOwnedOperations(state.pendingOperations, profile, this.settings.profiles);
     await this.saveSettings();
     this.rebuildEngines();
+    this.settingTab?.updateProjectFolder(profileId);
     new Notice(`${profile.projectName} moved to ${profile.streamientFolder}. Review before syncing again.`);
   }
 
@@ -700,6 +703,9 @@ export default class StreamientSyncPlugin extends Plugin {
 
 class StreamientSettingTab extends PluginSettingTab {
   private readonly statusElements = new Map<string, HTMLElement>();
+  private readonly statusSettings = new Map<string, Setting>();
+  private readonly folderInputs = new Map<string, HTMLInputElement>();
+  private readonly syncDisabledControls = new Set<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>();
 
   constructor(app: App, private readonly plugin: StreamientSyncPlugin) {
     super(app, plugin);
@@ -707,7 +713,39 @@ class StreamientSettingTab extends PluginSettingTab {
 
   refresh(): void {
     this.statusElements.clear();
+    this.statusSettings.clear();
+    this.folderInputs.clear();
+    this.syncDisabledControls.clear();
     this.update();
+  }
+
+  private disableDuringSync(element: HTMLInputElement | HTMLSelectElement | HTMLButtonElement, disabled = false): void {
+    element.dataset.streamientBaseDisabled = String(disabled);
+    element.disabled = disabled || this.plugin.isSyncActive();
+    this.syncDisabledControls.add(element);
+  }
+
+  updateSyncControls(): void {
+    for (const element of [...this.syncDisabledControls]) {
+      if (!element.isConnected) {
+        this.syncDisabledControls.delete(element);
+        continue;
+      }
+      element.disabled = element.dataset.streamientBaseDisabled === 'true' || this.plugin.isSyncActive();
+    }
+    for (const profile of this.plugin.settings.profiles) this.renderSyncActions(profile.id);
+  }
+
+  updateProjectFolder(profileId: string): void {
+    const profile = this.plugin.settings.profiles.find((item) => item.id === profileId);
+    const state = this.plugin.settings.profileStates[profileId];
+    const input = this.folderInputs.get(profileId);
+    if (profile && input) input.value = state?.folderRelocationTarget || profile.streamientFolder;
+  }
+
+  updateProject(profileId: string): void {
+    this.updateSyncStatus(profileId);
+    this.updateSyncControls();
   }
 
   getControlValue(key: string): unknown {
@@ -715,7 +753,7 @@ class StreamientSettingTab extends PluginSettingTab {
     if (key === 'deviceName') return this.plugin.settings.deviceName;
     const [field, profileId] = key.split(':');
     const profile = this.plugin.settings.profiles.find((item) => item.id === profileId);
-    if (field === 'folder') return profile?.streamientFolder;
+    if (field === 'folder') return this.plugin.settings.profileStates[profileId]?.folderRelocationTarget || profile?.streamientFolder;
     if (field === 'mode') return profile?.vaultMode;
     return undefined;
   }
@@ -752,18 +790,35 @@ class StreamientSettingTab extends PluginSettingTab {
         {
           name: 'Account',
           desc: account ? `${account.accountName} — ${account.userEmail || account.userName}` : 'Sign in to this account on this device',
-          render: (setting) => setting.addButton((button) => button.setButtonText(account ? 'Reconnect' : 'Sign in').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.reconnectProfileAccount(profile.id))),
+          render: (setting) => setting.addButton((button) => {
+            button.setButtonText(account ? 'Reconnect' : 'Sign in').onClick(() => this.plugin.reconnectProfileAccount(profile.id));
+            this.disableDuringSync(button.buttonEl);
+          }),
         },
         {
           name: 'Project folder',
           desc: 'Streamient project content always synchronizes both ways here.',
           render: (setting) => {
-            let value = profile.streamientFolder;
-            setting.addText((text) => text.setValue(value).setDisabled(this.plugin.isSyncActive()).onChange((next) => { value = next; }));
-            setting.addButton((button) => button.setButtonText('Move').setDisabled(this.plugin.isSyncActive()).onClick(() => void this.plugin.updateProfileFolder(profile.id, value)));
+            const value = state.folderRelocationTarget || profile.streamientFolder;
+            setting.addText((text) => {
+              text.setValue(value);
+              this.folderInputs.set(profile.id, text.inputEl);
+              this.disableDuringSync(text.inputEl);
+            });
+            setting.addButton((button) => {
+              button.setButtonText('Move').onClick(() => void this.plugin.updateProfileFolder(profile.id, this.folderInputs.get(profile.id)?.value || value));
+              this.disableDuringSync(button.buttonEl);
+            });
           },
         },
-        { name: 'Extra vault content', desc: 'Optionally synchronize content outside the managed project folder.', control: { type: 'dropdown', key: `mode:${profile.id}`, options: { off: 'Off', selected: 'Selected folders and files', all: 'Entire unassigned vault' }, disabled: () => this.plugin.isSyncActive() } },
+        {
+          name: 'Extra vault content',
+          desc: 'Optionally synchronize content outside the managed project folder.',
+          render: (setting) => setting.addDropdown((dropdown) => {
+            dropdown.addOptions({ off: 'Off', selected: 'Selected folders and files', all: 'Entire unassigned vault' }).setValue(profile.vaultMode).onChange((value) => void this.plugin.updateVaultMode(profile.id, value as VaultScopeMode));
+            this.disableDuringSync(dropdown.selectEl);
+          }),
+        },
         {
           name: 'Selected content',
           desc: profile.selectedPaths.length ? `${profile.selectedPaths.length} selected` : 'No additional vault content selected',
@@ -773,10 +828,18 @@ class StreamientSettingTab extends PluginSettingTab {
             for (const path of profile.selectedPaths) {
               const row = list.createDiv({ cls: 'streamient-scope-path' });
               row.createSpan({ text: `${path.kind}: ${path.path}` });
-              row.createEl('button', { text: 'Remove', cls: 'mod-muted' }).addEventListener('click', () => void this.plugin.removeScopePath(profile.id, path));
+              const remove = row.createEl('button', { text: 'Remove', cls: 'mod-muted' });
+              remove.addEventListener('click', () => void this.plugin.removeScopePath(profile.id, path));
+              this.disableDuringSync(remove);
             }
-            setting.addButton((button) => button.setButtonText('Add folder').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.chooseScopePath(profile.id, 'folder')));
-            setting.addButton((button) => button.setButtonText('Add file').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.chooseScopePath(profile.id, 'file')));
+            setting.addButton((button) => {
+              button.setButtonText('Add folder').onClick(() => this.plugin.chooseScopePath(profile.id, 'folder'));
+              this.disableDuringSync(button.buttonEl);
+            });
+            setting.addButton((button) => {
+              button.setButtonText('Add file').onClick(() => this.plugin.chooseScopePath(profile.id, 'file'));
+              this.disableDuringSync(button.buttonEl);
+            });
           },
         },
         {
@@ -784,11 +847,9 @@ class StreamientSettingTab extends PluginSettingTab {
           desc: '',
           render: (setting) => {
             this.statusElements.set(profile.id, setting.descEl);
+            this.statusSettings.set(profile.id, setting);
             this.updateSyncStatus(profile.id);
-            const progress = this.plugin.progressFor(profile.id);
-            if (progress?.active) setting.addButton((button) => button.setButtonText('Abort').setDestructive().onClick(() => void this.plugin.abortProject(profile.id)));
-            else setting.addButton((button) => button.setButtonText(state.folderRelocationTarget ? 'Resume move' : state.needsReview ? 'Review' : state.paused ? 'Resume' : 'Sync').setCta().onClick(() => void this.plugin.syncProject(profile.id)));
-            setting.addButton((button) => button.setButtonText('Remove').setDisabled(this.plugin.isSyncActive()).onClick(() => this.plugin.removeProject(profile.id)));
+            this.renderSyncActions(profile.id);
           },
         },
       ],
@@ -806,8 +867,14 @@ class StreamientSettingTab extends PluginSettingTab {
             name: 'Default account',
             desc: this.plugin.settings.defaultAccountKey && this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey] ? `${this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey].accountName} — ${this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey].userEmail || this.plugin.settings.accounts[this.plugin.settings.defaultAccountKey].userName}` : 'Not signed in',
             render: (setting) => {
-              setting.addButton((button) => button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().setDisabled(this.plugin.isSyncActive()).onClick(() => void this.plugin.startAuthorization()));
-              setting.addButton((button) => button.setButtonText('Add account').setDisabled(!this.plugin.settings.authenticated || this.plugin.isSyncActive()).onClick(() => this.plugin.addAccount()));
+              setting.addButton((button) => {
+                button.setButtonText(this.plugin.settings.authenticated ? 'Reconnect' : 'Sign in').setCta().onClick(() => void this.plugin.startAuthorization());
+                this.disableDuringSync(button.buttonEl);
+              });
+              setting.addButton((button) => {
+                button.setButtonText('Add account').onClick(() => this.plugin.addAccount());
+                this.disableDuringSync(button.buttonEl, !this.plugin.settings.authenticated);
+              });
               setting.addButton((button) => button.setButtonText('Sign out').setDisabled(!this.plugin.settings.authenticated).onClick(() => void this.plugin.disconnect()));
             },
           },
@@ -822,8 +889,14 @@ class StreamientSettingTab extends PluginSettingTab {
             name: 'Project sync profiles',
             desc: this.plugin.settings.profiles.length ? `${this.plugin.settings.profiles.length} configured` : 'No projects configured',
             render: (setting) => {
-              setting.addButton((button) => button.setButtonText('Add project').setCta().setDisabled(!this.plugin.settings.authenticated || this.plugin.isSyncActive()).onClick(() => void this.plugin.chooseProject()));
-              setting.addButton((button) => button.setButtonText('Sync all').setDisabled(!this.plugin.settings.authenticated || !this.plugin.settings.profiles.length || this.plugin.isSyncActive()).onClick(() => void this.plugin.syncAll()));
+              setting.addButton((button) => {
+                button.setButtonText('Add project').setCta().onClick(() => void this.plugin.chooseProject());
+                this.disableDuringSync(button.buttonEl, !this.plugin.settings.authenticated);
+              });
+              setting.addButton((button) => {
+                button.setButtonText('Sync all').onClick(() => void this.plugin.syncAll());
+                this.disableDuringSync(button.buttonEl, !this.plugin.settings.authenticated || !this.plugin.settings.profiles.length);
+              });
             },
           },
         ],
@@ -849,5 +922,28 @@ class StreamientSettingTab extends PluginSettingTab {
       bar.value = Math.min(progress.current, progress.total);
     }
     if (progress?.active && progress.path) element.createDiv({ cls: 'streamient-sync-path', text: progress.path });
+  }
+
+  private renderSyncActions(profileId: string): void {
+    const setting = this.statusSettings.get(profileId);
+    const state = this.plugin.settings.profileStates[profileId];
+    if (!setting || !state) return;
+    setting.controlEl.empty();
+    const progress = this.plugin.progressFor(profileId);
+    if (progress?.active) {
+      setting.addButton((button) => {
+        if (progress.phase === 'stopping') button.setButtonText('Stopping…').setDestructive().setDisabled(true);
+        else button.setButtonText('Abort').setDestructive().onClick(() => void this.plugin.abortProject(profileId));
+      });
+    } else {
+      setting.addButton((button) => {
+        button.setButtonText(state.folderRelocationTarget ? 'Resume move' : state.needsReview ? 'Review' : state.paused ? 'Resume' : 'Sync').setCta().onClick(() => void this.plugin.syncProject(profileId));
+        this.disableDuringSync(button.buttonEl);
+      });
+    }
+    setting.addButton((button) => {
+      button.setButtonText('Remove').onClick(() => this.plugin.removeProject(profileId));
+      this.disableDuringSync(button.buttonEl);
+    });
   }
 }
